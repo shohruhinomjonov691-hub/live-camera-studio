@@ -1,0 +1,274 @@
+"use strict";
+
+const MAX_BYTES = 10 * 1024 * 1024;
+const MIN_DRAW_PX = 6; // minimum manual box size in original image pixels
+
+const state = {
+  file: null,
+  width: 0,
+  height: 0,
+  regions: [], // {id, x, y, w, h, source} in original image pixels
+  nextId: 1,
+  resultUrl: null,
+  originalUrl: null,
+  blurSeq: 0,
+  draft: null,
+};
+
+const el = {
+  file: document.getElementById("file"),
+  status: document.getElementById("status"),
+  workspace: document.getElementById("workspace"),
+  count: document.getElementById("count"),
+  toggle: document.getElementById("toggle-boxes"),
+  draw: document.getElementById("draw-mode"),
+  hint: document.getElementById("draw-hint"),
+  download: document.getElementById("download"),
+  preview: document.getElementById("preview"),
+  overlay: document.getElementById("overlay"),
+  regions: document.getElementById("regions"),
+};
+
+/**
+ * Map a point on the responsive preview to original image pixels.
+ * The overlay has exactly the displayed image size, so a linear scale per axis is exact.
+ */
+function toImagePoint(clientX, clientY, rect, width, height) {
+  const x = ((clientX - rect.left) / rect.width) * width;
+  const y = ((clientY - rect.top) / rect.height) * height;
+  return {
+    x: Math.min(width, Math.max(0, x)),
+    y: Math.min(height, Math.max(0, y)),
+  };
+}
+
+function rectFromPoints(a, b) {
+  const x0 = Math.round(Math.min(a.x, b.x));
+  const y0 = Math.round(Math.min(a.y, b.y));
+  const x1 = Math.round(Math.max(a.x, b.x));
+  const y1 = Math.round(Math.max(a.y, b.y));
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+window.faceBlur = { toImagePoint, rectFromPoints, state };
+
+function setStatus(message, isError = false) {
+  el.status.textContent = message;
+  el.status.classList.toggle("error", isError);
+}
+
+async function errorMessage(response) {
+  try {
+    const body = await response.json();
+    if (body && body.detail) return body.detail;
+  } catch (_) {
+    /* not JSON */
+  }
+  return `Server xatosi (${response.status}).`;
+}
+
+function resetResult() {
+  if (state.resultUrl) URL.revokeObjectURL(state.resultUrl);
+  state.resultUrl = null;
+  el.download.href = "#";
+  el.download.setAttribute("aria-disabled", "true");
+}
+
+async function onFileSelected() {
+  const file = el.file.files[0];
+  if (!file) return;
+  el.file.value = "";
+
+  if (!["image/jpeg", "image/png"].includes(file.type)) {
+    setStatus("Faqat JPEG yoki PNG rasm tanlang.", true);
+    return;
+  }
+  if (file.size > MAX_BYTES) {
+    setStatus("Fayl 10 MB dan oshmasligi kerak.", true);
+    return;
+  }
+
+  resetResult();
+  if (state.originalUrl) URL.revokeObjectURL(state.originalUrl);
+  state.file = file;
+  state.regions = [];
+  state.nextId = 1;
+  setDrawMode(false);
+  setStatus("Yuzlar aniqlanmoqda…");
+
+  let data;
+  try {
+    const response = await fetch("/api/detect", {
+      method: "POST",
+      headers: { "Content-Type": file.type },
+      body: file,
+    });
+    if (!response.ok) {
+      setStatus(await errorMessage(response), true);
+      el.workspace.hidden = true;
+      return;
+    }
+    data = await response.json();
+  } catch (_) {
+    setStatus("Serverga ulanib bo‘lmadi.", true);
+    return;
+  }
+
+  state.width = data.width;
+  state.height = data.height;
+  state.regions = data.faces.map((f) => ({ id: state.nextId++, ...f, source: "auto" }));
+  state.originalUrl = URL.createObjectURL(file);
+  el.preview.src = state.originalUrl;
+  el.workspace.hidden = false;
+  render();
+  await requestBlur();
+}
+
+async function requestBlur() {
+  if (!state.file) return;
+  const seq = ++state.blurSeq;
+  el.download.setAttribute("aria-disabled", "true");
+  setStatus("Xiralashtirilmoqda…");
+
+  const regions = state.regions.map(({ x, y, w, h, source }) => ({ x, y, w, h, source }));
+  try {
+    const response = await fetch("/api/blur", {
+      method: "POST",
+      headers: { "Content-Type": state.file.type, "X-Regions": JSON.stringify(regions) },
+      body: state.file,
+    });
+    if (seq !== state.blurSeq) return; // a newer request superseded this one
+    if (!response.ok) {
+      setStatus(await errorMessage(response), true);
+      return;
+    }
+    const blob = await response.blob();
+    if (seq !== state.blurSeq) return;
+    resetResult();
+    state.resultUrl = URL.createObjectURL(blob);
+    el.preview.src = state.resultUrl;
+    el.download.href = state.resultUrl;
+    el.download.download = downloadName(state.file.name, blob.type);
+    el.download.setAttribute("aria-disabled", "false");
+    setStatus(state.regions.length ? "Preview tayyor. Tekshirib, yuklab oling." : "Xiralashtiriladigan hudud yo‘q.");
+  } catch (_) {
+    if (seq === state.blurSeq) setStatus("Serverga ulanib bo‘lmadi.", true);
+  }
+}
+
+function downloadName(original, type) {
+  const base = original.replace(/\.[^.]+$/, "") || "image";
+  return `${base}-blurred.${type === "image/png" ? "png" : "jpg"}`;
+}
+
+function percentStyle(node, r) {
+  node.style.left = `${(r.x / state.width) * 100}%`;
+  node.style.top = `${(r.y / state.height) * 100}%`;
+  node.style.width = `${(r.w / state.width) * 100}%`;
+  node.style.height = `${(r.h / state.height) * 100}%`;
+}
+
+function render() {
+  const autoCount = state.regions.filter((r) => r.source === "auto").length;
+  const manualCount = state.regions.length - autoCount;
+  el.count.textContent = `Avtomatik topilgan yuzlar: ${autoCount}` + (manualCount ? ` · qo‘lda: ${manualCount}` : "");
+
+  el.overlay.replaceChildren();
+  state.regions.forEach((r, index) => {
+    const box = document.createElement("div");
+    box.className = `box ${r.source}`;
+    percentStyle(box, r);
+    const label = document.createElement("span");
+    label.textContent = String(index + 1);
+    box.append(label);
+    el.overlay.append(box);
+  });
+  if (state.draft) {
+    const draft = document.createElement("div");
+    draft.className = "box draft";
+    percentStyle(draft, state.draft);
+    el.overlay.append(draft);
+  }
+  el.overlay.classList.toggle("hide-boxes", !el.toggle.checked);
+
+  el.regions.replaceChildren();
+  if (!state.regions.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "Hudud yo‘q. Yuz o‘tkazib yuborilgan bo‘lsa, qo‘lda qo‘shing.";
+    el.regions.append(li);
+    return;
+  }
+  state.regions.forEach((r, index) => {
+    const li = document.createElement("li");
+    const tag = document.createElement("span");
+    tag.className = `tag ${r.source}`;
+    tag.textContent = r.source === "auto" ? "avtomatik" : "qo‘lda";
+    const text = document.createElement("span");
+    text.textContent = `#${index + 1} · ${r.w}×${r.h} px`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Olib tashlash";
+    remove.setAttribute("aria-label", `${index + 1}-hududni olib tashlash`);
+    remove.addEventListener("click", () => {
+      state.regions = state.regions.filter((item) => item.id !== r.id);
+      render();
+      requestBlur();
+    });
+    li.append(tag, text, remove);
+    el.regions.append(li);
+  });
+}
+
+function setDrawMode(on) {
+  el.draw.setAttribute("aria-pressed", String(on));
+  el.overlay.classList.toggle("drawing", on);
+  el.hint.hidden = !on;
+}
+
+let dragStart = null;
+
+el.overlay.addEventListener("pointerdown", (event) => {
+  if (el.draw.getAttribute("aria-pressed") !== "true" || !state.width) return;
+  event.preventDefault();
+  el.overlay.setPointerCapture(event.pointerId);
+  const rect = el.overlay.getBoundingClientRect();
+  dragStart = toImagePoint(event.clientX, event.clientY, rect, state.width, state.height);
+  state.draft = { x: dragStart.x, y: dragStart.y, w: 0, h: 0 };
+  render();
+});
+
+el.overlay.addEventListener("pointermove", (event) => {
+  if (!dragStart) return;
+  const rect = el.overlay.getBoundingClientRect();
+  const point = toImagePoint(event.clientX, event.clientY, rect, state.width, state.height);
+  state.draft = rectFromPoints(dragStart, point);
+  render();
+});
+
+function finishDrag(event) {
+  if (!dragStart) return;
+  const rect = el.overlay.getBoundingClientRect();
+  const point = toImagePoint(event.clientX, event.clientY, rect, state.width, state.height);
+  const box = rectFromPoints(dragStart, point);
+  dragStart = null;
+  state.draft = null;
+  if (box.w >= MIN_DRAW_PX && box.h >= MIN_DRAW_PX) {
+    state.regions.push({ id: state.nextId++, ...box, source: "manual" });
+    render();
+    requestBlur();
+  } else {
+    render();
+  }
+}
+
+el.overlay.addEventListener("pointerup", finishDrag);
+el.overlay.addEventListener("pointercancel", () => {
+  dragStart = null;
+  state.draft = null;
+  render();
+});
+
+el.file.addEventListener("change", onFileSelected);
+el.toggle.addEventListener("change", render);
+el.draw.addEventListener("click", () => setDrawMode(el.draw.getAttribute("aria-pressed") !== "true"));

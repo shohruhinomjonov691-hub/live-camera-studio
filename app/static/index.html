@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Face Blur</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <h1>Face Blur</h1>
+      <p>Rasmdagi yuzlarni xiralashtiring va natijani yuklab oling. Rasm serverda saqlanmaydi.</p>
+    </header>
+
+    <p class="notice" role="note">
+      <strong>Avtomatik aniqlash barcha yuzlarni topishni kafolatlamaydi.</strong>
+      Yuklab olishdan oldin natijani tekshiring va kerak bo‘lsa qo‘lda hudud qo‘shing.
+    </p>
+
+    <section class="upload">
+      <label class="file-button">
+        <input id="file" type="file" accept="image/jpeg,image/png">
+        <span>Rasm tanlash</span>
+      </label>
+      <small>JPEG yoki PNG · 10 MB · 25 megapikselgacha</small>
+    </section>
+
+    <p id="status" class="status" aria-live="polite"></p>
+
+    <section id="workspace" class="workspace" hidden>
+      <div class="toolbar">
+        <span id="count" class="count"></span>
+        <label class="toggle">
+          <input id="toggle-boxes" type="checkbox" checked>
+          Bbox ko‘rsatish
+        </label>
+        <button id="draw-mode" type="button" aria-pressed="false">Qo‘lda hudud qo‘shish</button>
+        <a id="download" class="button primary" href="#" aria-disabled="true">Yuklab olish</a>
+      </div>
+
+      <p id="draw-hint" class="hint" hidden>Yuz ustida barmoq yoki sichqoncha bilan to‘rtburchak chizing.</p>
+
+      <div id="stage" class="stage">
+        <img id="preview" alt="Xiralashtirilgan rasm preview">
+        <div id="overlay" class="overlay"></div>
+      </div>
+
+      <h2>Xiralashtiriladigan hududlar</h2>
+      <ul id="regions" class="regions"></ul>
+    </section>
+  </main>
+</body>
+</html>
