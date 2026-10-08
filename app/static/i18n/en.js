@@ -14,7 +14,7 @@ window.LCS_I18N.en = {
   "hud.faces.one": "1 face",
   "hud.perf": "{fps} FPS · {ms} ms",
   "hud.perf.none": "Measuring…",
-  "hud.blurOff": "Face blur off",
+  "hud.blurOff": "Face blur off · faces visible",
 
   "hidden.title": "Preview hidden",
   "hidden.noface": "No face detected, so the whole frame is hidden while face blur is on. Face the camera directly.",
@@ -83,8 +83,8 @@ window.LCS_I18N.en = {
   "mode.later": "Coming in a later update",
 
   "privacy.blur": "Blur faces",
-  "privacy.blur.sub": "Applied over every detected face",
-  "privacy.blurOff": "Face blur is off: the live preview shows faces unblurred.",
+  "privacy.blur.sub": "Applied over every detected face. Turning it on turns glasses off.",
+  "privacy.blurOff": "Face blur is off — faces are visible in the preview and in snapshots.",
   "privacy.method": "Method",
   "privacy.method.pixel": "Pixelate + Gaussian",
   "privacy.method.gauss": "Gaussian",
@@ -103,11 +103,10 @@ window.LCS_I18N.en = {
 
   "effects.title": "Face effect",
   "effects.glasses": "Glasses",
-  "effects.glasses.sub": "Placed on the eye landmarks of each frame and follows head tilt",
+  "effects.glasses.sub": "Placed on the eye landmarks of each frame and follows head tilt. Turns face blur off.",
   "effects.size": "Size",
   "effects.loading": "Loading face landmarks (local file)…",
-  "effects.error": "Glasses are unavailable right now. Face blur keeps working.",
-  "effects.blurNote": "While face blur is on, the blur is drawn over the glasses. Turn blur off in Privacy to see them clearly.",
+  "effects.error": "Glasses are unavailable right now, so face blur was turned back on.",
   "ctrl.snap": "Snapshot",
   "dock.snap": "Take snapshot",
   "snap.disabled": "Available while a processed frame is on screen",
@@ -119,6 +118,8 @@ window.LCS_I18N.en = {
   "shots.removeAria": "Remove snapshot {n}",
   "toast.title": "Snapshot ready",
   "toast.meta": "{w}×{h} · PNG · no metadata",
+  "effects.exclusive": "Glasses and face blur are exclusive: turning glasses on turns face blur off. Turning glasses off does not turn blur back on, and opening Privacy turns glasses off.",
+  "effects.faceVisible": "Glasses are on, so face blur is off — faces are visible in the preview and in snapshots.",
   "background.soon": "Background blur and replacement are planned for a later update.",
 
   "upload.title": "Choose a photo",

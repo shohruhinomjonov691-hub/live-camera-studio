@@ -14,7 +14,7 @@ window.LCS_I18N.ko = {
   "hud.faces.one": "얼굴 1개",
   "hud.perf": "{fps} FPS · {ms}ms",
   "hud.perf.none": "측정 중…",
-  "hud.blurOff": "얼굴 블러 꺼짐",
+  "hud.blurOff": "얼굴 블러 꺼짐 · 얼굴 보임",
 
   "hidden.title": "미리보기 숨김",
   "hidden.noface": "얼굴을 찾지 못해 얼굴 블러가 켜진 동안 전체 화면을 숨겼습니다. 카메라를 정면으로 바라봐 주세요.",
@@ -83,8 +83,8 @@ window.LCS_I18N.ko = {
   "mode.later": "이후 업데이트에서 제공",
 
   "privacy.blur": "얼굴 블러",
-  "privacy.blur.sub": "감지된 모든 얼굴에 적용",
-  "privacy.blurOff": "얼굴 블러가 꺼져 있어 라이브 미리보기에 얼굴이 그대로 보입니다.",
+  "privacy.blur.sub": "감지된 모든 얼굴에 적용됩니다. 켜면 안경이 꺼집니다.",
+  "privacy.blurOff": "얼굴 블러가 꺼져 있어 미리보기와 스냅샷에 얼굴이 그대로 보입니다.",
   "privacy.method": "방식",
   "privacy.method.pixel": "픽셀화 + 가우시안",
   "privacy.method.gauss": "가우시안",
@@ -103,11 +103,10 @@ window.LCS_I18N.ko = {
 
   "effects.title": "얼굴 효과",
   "effects.glasses": "안경",
-  "effects.glasses.sub": "프레임마다 눈 랜드마크에 맞춰 배치되고 고개 기울기를 따라갑니다",
+  "effects.glasses.sub": "프레임마다 눈 랜드마크에 맞춰 배치되고 고개 기울기를 따라갑니다. 켜면 얼굴 블러가 꺼집니다.",
   "effects.size": "크기",
   "effects.loading": "얼굴 랜드마크 불러오는 중 (로컬 파일)…",
-  "effects.error": "지금은 안경 효과를 사용할 수 없습니다. 얼굴 블러는 계속 작동합니다.",
-  "effects.blurNote": "얼굴 블러가 켜져 있으면 블러가 안경 위에 그려집니다. 안경을 선명하게 보려면 프라이버시에서 블러를 끄세요.",
+  "effects.error": "지금은 안경 효과를 사용할 수 없어 얼굴 블러를 다시 켰습니다.",
   "ctrl.snap": "스냅샷",
   "dock.snap": "스냅샷 찍기",
   "snap.disabled": "처리된 프레임이 화면에 있을 때 사용할 수 있습니다",
@@ -119,6 +118,8 @@ window.LCS_I18N.ko = {
   "shots.removeAria": "스냅샷 {n} 삭제",
   "toast.title": "스냅샷 준비 완료",
   "toast.meta": "{w}×{h} · PNG · 메타데이터 없음",
+  "effects.exclusive": "안경과 얼굴 블러는 함께 사용할 수 없습니다. 안경을 켜면 얼굴 블러가 꺼지고, 안경을 꺼도 블러는 자동으로 다시 켜지지 않으며, 프라이버시를 열면 안경이 꺼집니다.",
+  "effects.faceVisible": "안경이 켜져 있어 얼굴 블러가 꺼져 있습니다. 미리보기와 스냅샷에 얼굴이 그대로 보입니다.",
   "background.soon": "배경 블러 및 교체는 이후 업데이트에서 제공될 예정입니다.",
 
   "upload.title": "사진 선택",

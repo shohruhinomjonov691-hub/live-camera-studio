@@ -11,8 +11,9 @@
 // - Every camera start opens a session; late streams, late frames and late detector results from an older
 //   session are discarded (and their tracks/bitmaps released).
 // - Frames never leave the browser: this file makes no network requests.
-// - Effects (glasses) use landmarks of that same frame and are drawn before the blur, so hiding faces is
-//   always the last layer. A landmarker or effect failure only turns the effect off; blur keeps working.
+// - Effects (glasses) use landmarks of that same frame. Glasses and face blur are exclusive (glasses ON turns
+//   blur OFF; blur ON turns glasses OFF), and blur is still drawn last. A landmarker or effect failure only
+//   turns the effect off. Changing either setting drops the frame in flight.
 // - Snapshots are copied from the visible, fully processed canvas only — never from the raw video.
 //
 // The controller takes its browser dependencies as `env`, so tests can drive it with fakes.
@@ -224,6 +225,25 @@
       if (env.onEffect) env.onEffect(next, message);
     }
 
+    /**
+     * The glasses effect failed (landmarker load/runtime error, drawing error). Fail closed: turn the effect
+     * off and face blur back on. `midCompose` is set when the current frame is being composed and will be
+     * blurred right away, so the canvas must not be wiped under it.
+     */
+    function effectFailed(message, { midCompose = false } = {}) {
+      setLandmarker("error", message);
+      if (!settings.glasses) return;
+      settings.glasses = false;
+      settings.blurOn = true;
+      if (!midCompose) {
+        dropJob();
+        clearView();
+        if (state === "live" || state === "hidden") setState("hidden", { why: "pending" });
+        if (stream && state !== "error") schedule();
+      }
+      if (env.onSettings) env.onSettings({ ...settings });
+    }
+
     /** Load the landmarker in the worker (once). Without a worker it is requested when one is created. */
     function requestLandmarker() {
       if (!worker || landmarker === "loading" || landmarker === "ready") return;
@@ -248,7 +268,7 @@
       } else if (msg.type === "landmarker-ready") {
         setLandmarker("ready");
       } else if (msg.type === "landmarker-error") {
-        setLandmarker("error", msg.message);
+        effectFailed(msg.message);
       } else if (msg.type === "result") {
         onResult(msg);
       } else if (msg.type === "error") {
@@ -441,7 +461,8 @@
       env.clearTimeout(current.timer);
 
       const faces = msg.faces || [];
-      if (current.landmarks && msg.landmarksError) setLandmarker("error", msg.landmarksError);
+      // The result itself is still good: compose it below, blurred now that the effect has failed closed.
+      if (current.landmarks && msg.landmarksError) effectFailed(msg.landmarksError, { midCompose: true });
       // Landmarks of this very frame, only if the effect is still on.
       const eyes = current.landmarks && settings.glasses && Array.isArray(msg.eyes) ? msg.eyes : [];
       try {
@@ -477,7 +498,8 @@
         try {
           eyes.forEach((eye) => drawGlasses(bctx, eye, settings.glassesSize / 100));
         } catch (error) {
-          setLandmarker("error", String((error && error.message) || error));
+          // Blur is switched back on before the blur step below, so this very frame is blurred.
+          effectFailed(String((error && error.message) || error), { midCompose: true });
         }
       }
       const boxes = faces.map((face) => boxFor(face, width, height)).filter(Boolean);
@@ -562,16 +584,28 @@
         }
       },
       setSettings(partial) {
-        const blurTurnedOn = partial.blurOn === true && !settings.blurOn;
-        Object.assign(settings, partial);
+        const next = { ...settings, ...partial };
+        // Glasses and face blur are exclusive: glasses ON turns blur OFF, blur ON turns glasses OFF.
+        // Turning glasses off never turns blur back on (that stays the user's explicit choice).
+        if (partial.glasses === true) next.blurOn = false;
+        if (partial.blurOn === true) {
+          next.blurOn = true;
+          next.glasses = false;
+        }
+        const blurTurnedOn = next.blurOn && !settings.blurOn;
+        const modeChanged = next.blurOn !== settings.blurOn || next.glasses !== settings.glasses;
+        Object.assign(settings, next);
         // Turning the effect on (again) loads the landmarker, or retries it after an error.
         if (partial.glasses === true && landmarker !== "ready") requestLandmarker();
-        if (blurTurnedOn) {
-          // Nothing captured or drawn while blur was off may stay visible: wipe it and show only frames
-          // that are captured and processed with blur on.
+        if (modeChanged) {
+          // A frame captured under the old mode must not be drawn under the new one.
           dropJob();
-          clearView();
-          if (state === "live" || state === "hidden") setState("hidden", { why: "pending" });
+          if (blurTurnedOn) {
+            // Nothing captured or drawn while blur was off may stay visible: wipe it and show only frames
+            // that are captured and processed with blur on.
+            clearView();
+            if (state === "live" || state === "hidden") setState("hidden", { why: "pending" });
+          }
           // The dropped job may have been the only thing keeping the loop alive (e.g. the first frame
           // while still "loading"), so always ask for the next frame. tick() waits for the detector.
           if (stream && state !== "error") schedule();

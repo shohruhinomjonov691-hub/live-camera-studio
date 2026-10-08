@@ -27,10 +27,13 @@ class FakeElement {
   setAttribute(name, value) { this.attrs[name] = String(value); }
   getAttribute(name) { return name in this.attrs ? this.attrs[name] : null; }
   replaceChildren() { this.children = []; }
+  getContext() {
+    return new Proxy({}, { get: () => () => {}, set: () => true });
+  }
   append(...nodes) { this.children.push(...nodes); }
 }
 
-function loadShell() {
+function loadShell({ realCamera = false } = {}) {
   const elements = new Map();
   const windowListeners = {};
   const urls = { created: [], revoked: [] };
@@ -58,7 +61,7 @@ function loadShell() {
       },
       revokeObjectURL: (url) => urls.revoked.push(url),
     },
-    createCameraController: () => camera,
+    ...(realCamera ? {} : { createCameraController: () => camera }),
     addEventListener: (type, fn) => (windowListeners[type] ||= []).push(fn),
     document: {
       documentElement: {},
@@ -77,13 +80,19 @@ function loadShell() {
   };
   context.window = context;
   vm.createContext(context);
-  for (const file of ["i18n/en.js", "i18n/ko.js", "i18n.js", "shell.js"]) vm.runInContext(read(file), context);
+  const files = ["i18n/en.js", "i18n/ko.js", "i18n.js", ...(realCamera ? ["camera.js"] : []), "shell.js"];
+  for (const file of files) vm.runInContext(read(file), context);
   return {
     context,
     urls,
     el: (selector) => elements.get(selector),
     encode: () => pendingBlob({ size: 123, type: "image/png" }),
     fire: (type) => (windowListeners[type] || []).forEach((fn) => fn()),
+    toggle: (selector, checked) => {
+      const element = elements.get(selector);
+      element.checked = checked;
+      element.listeners.change.forEach((fn) => fn({ target: element }));
+    },
   };
 }
 
@@ -111,4 +120,54 @@ test("a snapshot still being encoded at pagehide is discarded", async () => {
   assert.equal(h.context.liveCameraShell.snapshots().length, 0, "not added back to the list");
   assert.deepEqual(h.urls.created, [], "no blob URL is created after cleanup");
   assert.equal(h.el("#snap-toast").hidden, toastHiddenBefore, "no toast reopened");
+});
+
+// ---------- UX: glasses and face blur toggles (real camera controller) ----------
+
+const EN = (key) => {
+  const context = { window: {} };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(read("i18n/en.js"), context);
+  return context.LCS_I18N.en[key];
+};
+
+test("[ux] toggles and notes follow the real settings: glasses ON turns blur OFF and says faces are visible", () => {
+  const h = loadShell({ realCamera: true });
+  assert.equal(h.el("#t-blur").checked, true);
+  assert.equal(h.el("#t-glasses").checked, false);
+  assert.equal(h.el("#effect-blur-note").textContent, EN("effects.exclusive"));
+
+  h.toggle("#t-glasses", true);
+  assert.equal(h.el("#t-glasses").checked, true);
+  assert.equal(h.el("#t-blur").checked, false, "blur toggle shows OFF");
+  assert.equal(h.el("#blur-off-warn").hidden, false, "privacy panel warns that faces are visible");
+  assert.equal(h.el("#effect-blur-note").textContent, EN("effects.faceVisible"));
+
+  h.toggle("#t-glasses", false);
+  assert.equal(h.el("#t-blur").checked, false, "glasses OFF does not turn blur back on");
+  assert.equal(h.el("#blur-off-warn").hidden, false);
+  assert.equal(h.el("#effect-blur-note").textContent, EN("effects.exclusive"));
+});
+
+test("[ux] blur ON turns glasses OFF; Privacy mode turns glasses OFF without enabling blur", () => {
+  const h = loadShell({ realCamera: true });
+  h.toggle("#t-glasses", true);
+  h.toggle("#t-blur", true);
+  assert.equal(h.el("#t-glasses").checked, false);
+  assert.equal(h.el("#t-blur").checked, true);
+  assert.equal(h.el("#blur-off-warn").hidden, true);
+
+  h.toggle("#t-glasses", true);
+  h.context.liveCameraShell.selectMode("privacy");
+  assert.equal(h.el("#t-glasses").checked, false, "privacy mode turns glasses off");
+  assert.equal(h.el("#t-blur").checked, false, "and does not turn blur on by itself");
+  assert.equal(h.el("#blur-off-warn").hidden, false);
+});
+
+test("[ux] the face-visible note is translated", () => {
+  const h = loadShell({ realCamera: true });
+  h.toggle("#t-glasses", true);
+  h.context.i18n.setLang("ko");
+  assert.equal(h.el("#effect-blur-note").textContent, "안경이 켜져 있어 얼굴 블러가 꺼져 있습니다. 미리보기와 스냅샷에 얼굴이 그대로 보입니다.");
 });

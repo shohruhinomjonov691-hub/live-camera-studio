@@ -633,9 +633,10 @@ function reply(h, msg, extra = {}) {
   h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, inferMs: 5, eyes: null, landmarksError: null, ...extra });
 }
 
-test("[g] glasses use the landmarks of the same frame and the blur is drawn over them", async () => {
+test("[g] glasses use the landmarks of the same frame; blur is off while glasses are on", async () => {
   const h = setup();
   await liveWithGlasses(h);
+  assert.equal(h.camera.settings.blurOn, false, "glasses ON turns face blur OFF");
   await h.runFrame();
   const msg = h.lastDetect();
   assert.equal(msg.landmarks, true, "landmarks requested for this frame");
@@ -644,9 +645,8 @@ test("[g] glasses use the landmarks of the same frame and the blur is drawn over
   const buffer = h.buffer();
   const frameDraw = buffer.ops.findIndex((op) => op[0] === "drawImage" && op[1] === frame);
   assert.ok(frameDraw >= 0, "the captured frame is the base layer");
-  assert.ok(glassesOps(buffer) > 0, "glasses drawn");
   assert.ok(frameDraw < firstIndex(buffer, "arcTo"), "glasses over the frame");
-  assert.ok(firstIndex(buffer, "arcTo") < firstIndex(buffer, "clip"), "blur is the last layer");
+  assert.equal(firstIndex(buffer, "clip"), -1, "no blur while glasses are on");
   assert.equal(h.state(), "live");
   assert.equal(frame.closed, true);
 });
@@ -661,7 +661,7 @@ test("[g] with blur off the glasses are visible and nothing is blurred", async (
   assert.equal(firstIndex(h.buffer(), "clip"), -1);
 });
 
-test("[g] before the landmarker is ready no landmarks are requested; blur works", async () => {
+test("[g] before the landmarker is ready no landmarks are requested or drawn", async () => {
   const h = setup();
   await liveWithGlasses(h, { ready: false });
   await h.runFrame();
@@ -669,40 +669,43 @@ test("[g] before the landmarker is ready no landmarks are requested; blur works"
   assert.equal(msg.landmarks, false);
   reply(h, msg, { eyes: EYES }); // even if a worker sent eyes, they are not used for this frame
   assert.equal(glassesOps(h.buffer()), 0);
-  assert.ok(firstIndex(h.buffer(), "clip") >= 0);
   assert.equal(h.camera.effect, "loading");
 });
 
-test("[g] a landmarker that fails to load leaves privacy mode working", async () => {
+test("[g] a landmarker that fails to load turns glasses off and face blur back on (fail closed)", async () => {
   const h = setup();
   await liveWithGlasses(h, { ready: false });
+  await showFrame(h, FACE); // an unblurred frame is on screen (glasses mode)
   h.worker.reply({ type: "landmarker-error", message: "model blocked" });
   assert.equal(h.camera.effect, "error");
+  assert.deepEqual(plain({ glasses: h.camera.settings.glasses, blurOn: h.camera.settings.blurOn }), { glasses: false, blurOn: true });
+  assert.ok(cleared(h.env.view) && cleared(h.buffer()), "the unblurred frame is wiped at once");
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "pending" }]);
   await h.runFrame();
   const msg = h.lastDetect();
   assert.equal(msg.landmarks, false);
   reply(h, msg);
   assert.equal(h.state(), "live");
-  assert.ok(firstIndex(h.buffer(), "clip") >= 0, "blur still applied");
+  assert.ok(firstIndex(h.buffer(), "clip") >= 0, "blur applied");
   // Turning the effect on again retries the landmarker.
-  h.camera.setSettings({ glasses: false });
   h.camera.setSettings({ glasses: true });
   assert.equal(h.worker.posted.filter((m) => m.type === "init-landmarker").length, 2);
 });
 
-test("[g] a landmark error in a result turns the effect off, not the blur", async () => {
+test("[g] a landmark error in a result fails closed: this frame is blurred, glasses off", async () => {
   const h = setup();
   await liveWithGlasses(h);
   await h.runFrame();
   reply(h, h.lastDetect(), { eyes: null, landmarksError: "graph failed" });
   assert.equal(h.camera.effect, "error");
+  assert.equal(h.camera.settings.blurOn, true);
   assert.equal(h.state(), "live");
-  assert.ok(firstIndex(h.buffer(), "clip") >= 0);
+  assert.ok(firstIndex(h.buffer(), "clip") >= 0, "the same frame is blurred");
   await h.runFrame();
   assert.equal(h.lastDetect().landmarks, false, "no more landmark requests after the error");
 });
 
-test("[g] an exception while drawing glasses keeps the blur and closes the frame", async () => {
+test("[g] an exception while drawing glasses blurs that frame and closes it", async () => {
   const h = setup();
   await liveWithGlasses(h);
   await h.runFrame();
@@ -710,8 +713,9 @@ test("[g] an exception while drawing glasses keeps the blur and closes the frame
   h.buffer().throwOn = "arcTo";
   reply(h, h.lastDetect(), { eyes: EYES });
   assert.equal(h.camera.effect, "error");
+  assert.equal(h.camera.settings.blurOn, true);
   assert.equal(h.state(), "live");
-  assert.ok(firstIndex(h.buffer(), "clip") >= 0, "blur applied after the effect failed");
+  assert.ok(firstIndex(h.buffer(), "clip") >= 0, "blur applied to the frame whose effect failed");
   assert.equal(frame.closed, true);
 });
 
@@ -740,14 +744,13 @@ test("[g] landmarks of a timed-out frame are never drawn; frames are released", 
   assert.ok(h.captured.every((b) => b.closed), "every captured bitmap is closed");
 });
 
-test("[g] no face with blur on hides the frame even when landmarks came back", async () => {
+test("[g] no face while glasses are on: the frame is shown unblurred (faces visible by choice)", async () => {
   const h = setup();
   await liveWithGlasses(h);
   await h.runFrame();
   reply(h, h.lastDetect(), { faces: [], eyes: EYES });
-  assert.equal(h.state(), "hidden");
-  assert.equal(glassesOps(h.buffer()), 0);
-  assert.ok(cleared(h.env.view));
+  assert.equal(h.state(), "live");
+  assert.equal(firstIndex(h.buffer(), "clip"), -1);
 });
 
 test("[g] restarting the detector reloads the landmarker for the new worker", async () => {
@@ -841,4 +844,65 @@ test("[w] messages from a replaced worker cannot change the new worker's state",
 
   h.worker.reply({ type: "landmarker-ready", initMs: 1 });
   assert.equal(h.camera.effect, "ready", "the current worker still can");
+});
+
+// ---------- UX: glasses and face blur are exclusive ----------
+
+const mode = (h) => plain({ glasses: h.camera.settings.glasses, blurOn: h.camera.settings.blurOn });
+
+test("[ux] glasses ON -> blur OFF; blur ON -> glasses OFF; glasses OFF leaves blur OFF", () => {
+  const h = setup();
+  assert.deepEqual(mode(h), { glasses: false, blurOn: true });
+  h.camera.setSettings({ glasses: true });
+  assert.deepEqual(mode(h), { glasses: true, blurOn: false });
+  h.camera.setSettings({ glasses: false });
+  assert.deepEqual(mode(h), { glasses: false, blurOn: false }, "turning glasses off does not re-enable blur");
+  h.camera.setSettings({ glasses: true });
+  h.camera.setSettings({ blurOn: true });
+  assert.deepEqual(mode(h), { glasses: false, blurOn: true });
+  h.camera.setSettings({ glasses: true, blurOn: true });
+  assert.deepEqual(mode(h), { glasses: false, blurOn: true }, "if both are asked for, blur wins");
+});
+
+test("[ux] a blurred frame in flight is not drawn after glasses turn blur off", async () => {
+  const h = setup();
+  await goLive(h);
+  await showFrame(h, FACE);
+  await h.runFrame(); // captured with blur on
+  const stale = h.lastDetect();
+  h.camera.setSettings({ glasses: true });
+  h.worker.reply({ type: "landmarker-ready", initMs: 1 });
+  const draws = viewDraws(h.env.view).length;
+  reply(h, stale, { eyes: EYES });
+  assert.equal(viewDraws(h.env.view).length, draws, "result from the old mode is dropped");
+  assert.ok(h.pendingFrames() >= 1);
+  await h.runFrame();
+  const fresh = h.lastDetect();
+  assert.equal(fresh.landmarks, true);
+  reply(h, fresh, { eyes: EYES });
+  assert.ok(glassesOps(h.buffer()) > 0);
+});
+
+test("[ux] blur ON while a glasses frame is in flight: canvas wiped at once, old result dropped", async () => {
+  const h = setup();
+  await liveWithGlasses(h);
+  await showFrame(h, FACE); // unblurred glasses frame on screen
+  await h.runFrame();
+  const stale = h.lastDetect();
+  const staleFrame = h.captured.at(-1);
+  h.camera.setSettings({ blurOn: true });
+  assert.ok(cleared(h.env.view) && cleared(h.env.overlay) && cleared(h.buffer()));
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "pending" }]);
+  assert.equal(staleFrame.closed, true);
+  assert.equal(h.camera.snapshot(), null, "no snapshot while pending");
+  const draws = viewDraws(h.env.view).length;
+  reply(h, stale, { eyes: EYES });
+  assert.equal(viewDraws(h.env.view).length, draws, "the glasses-mode result never reaches the screen");
+  await h.runFrame();
+  const fresh = h.lastDetect();
+  assert.equal(fresh.landmarks, false);
+  reply(h, fresh);
+  assert.equal(h.state(), "live");
+  assert.ok(firstIndex(h.buffer(), "clip") >= 0);
+  assert.equal(glassesOps(h.buffer()), 0);
 });

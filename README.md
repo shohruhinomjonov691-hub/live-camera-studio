@@ -14,7 +14,7 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 - Real-time face blur: pixelate + Gaussian, Gaussian, or a solid block, in three strengths; optional face boxes on the preview.
 - Fail-closed privacy mode: while face blur is on, the whole preview is hidden when the detector is loading, has failed, is slower than 1 s, or finds no face (see [Privacy](#privacy)). Hiding reduces exposure; it is **not** guaranteed anonymization.
 - Clear states for permission prompt, blocked permission, no/busy camera, camera unplugged, insecure page and detector errors.
-- Glasses effect: drawn on the eye landmarks of each frame (follows head tilt), adjustable size. With face blur on, the blur is drawn over the glasses.
+- Glasses effect: drawn on the eye landmarks of each frame (follows head tilt), adjustable size. Glasses and face blur are exclusive: turning glasses on turns face blur off (the UI then says faces are visible); turning blur on, or opening Privacy, turns glasses off; turning glasses off does not turn blur back on.
 - Snapshots: a PNG of the processed preview exactly as shown (blur, glasses, mirror), without face boxes or HUD and without metadata; kept in the tab until removed or the page closes. Available only while a processed frame is on screen.
 - Background effects are planned for a later update.
 
@@ -43,7 +43,7 @@ Live camera:
 - While a result is pending, the preview keeps the last processed frame; after 1 s, on zero faces (with blur on) or on any error, the canvas is cleared.
 - Every camera start is a session. A stream granted after Cancel, and detector results that arrive after Stop, are discarded (tracks stopped, bitmaps closed). Stop, hiding the page, closing it, switching to Photo upload and a camera that ends all stop the tracks and the render loop and clear the canvas.
 - Turning face blur off is a deliberate user choice: the live preview then shows faces unblurred, and the UI says so. Turning it back on clears the canvas at once; only a frame captured and processed with blur on reappears.
-- Glasses use landmarks computed on the same captured frame as the face boxes and are drawn before the blur. If the landmarker fails to load or errors, only the effect turns off — face detection and blur keep working.
+- Glasses use landmarks computed on the same captured frame as the face boxes. Changing blur or glasses drops the frame in flight, so a result from the old mode never reaches the screen. If the landmarker fails to load or errors, or drawing the glasses fails, the app fails closed: glasses turn off and face blur turns back on (the frame being drawn is blurred; otherwise the canvas is wiped at once).
 - Snapshots copy the visible processed canvas (never the raw video), flipped like the preview when Mirror is on. They are disabled while loading, pending after blur is re-enabled, hidden, in error or stopped. `canvas.toBlob("image/png")` writes only image data (verified: `IHDR`, `IDAT`, `IEND` chunks). Snapshots are not uploaded.
 
 Photo upload:

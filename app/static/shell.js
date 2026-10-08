@@ -42,11 +42,13 @@
       ui.effect = status;
       renderEffect();
     },
+    // The controller changed settings itself (an effect failure turns blur back on): sync the toggles.
+    onSettings: () => renderAllSettings(),
   });
   // For manual measurement in the browser console: liveCamera.stats()
   window.liveCamera = camera;
   // For tests: the snapshot flow without DOM events.
-  window.liveCameraShell = { takeSnapshot, snapshots: () => ui.snapshots.slice() };
+  window.liveCameraShell = { takeSnapshot, snapshots: () => ui.snapshots.slice(), selectMode: (mode) => selectMode(mode) };
 
   // ---------- tabs and language ----------
   function setTab(tab) {
@@ -81,7 +83,8 @@
     const faces = state === "live" ? info.faces : 0;
     $("#chip-faces").textContent = faces === 1 ? t("hud.faces.one") : t("hud.faces", { n: faces });
     $("#chip-faces").classList.toggle("warn", !faces);
-    $("#chip-bluroff").hidden = !(state === "live" && info.blurOn === false);
+    // Faces are visible whenever blur is off and a frame is on screen: say so on the preview itself.
+    $("#chip-bluroff").hidden = !(streaming && !camera.settings.blurOn);
 
     const on = camera.active || streaming || state === "error";
     $("#cam-toggle-label").textContent = t(on ? "ctrl.off" : "ctrl.on");
@@ -221,7 +224,9 @@
     $("#t-glasses").checked = s.glasses;
     $("#t-glasses-size").value = String(s.glassesSize);
     $("#t-glasses-size-value").textContent = `${s.glassesSize}%`;
-    $("#effect-blur-note").hidden = !(s.glasses && s.blurOn);
+    const note = $("#effect-blur-note");
+    note.textContent = t(s.glasses ? "effects.faceVisible" : "effects.exclusive");
+    note.classList.toggle("warn-line", s.glasses);
     const status = $("#effect-status");
     const message = s.glasses ? { loading: "effects.loading", error: "effects.error" }[ui.effect] : null;
     status.hidden = !message;
@@ -229,8 +234,8 @@
     if (message) status.textContent = t(message);
   }
   $("#t-glasses").addEventListener("change", (e) => {
-    camera.setSettings({ glasses: e.target.checked });
-    renderEffect();
+    camera.setSettings({ glasses: e.target.checked }); // ON turns face blur OFF; OFF leaves blur as it is
+    renderAllSettings();
   });
   $("#t-glasses-size").addEventListener("input", (e) => {
     camera.setSettings({ glassesSize: Number(e.target.value) });
@@ -259,10 +264,16 @@
     $("#t-strength-value").textContent = t(`privacy.strength.${s.strength}`);
   }
   $("#t-blur").addEventListener("change", (e) => {
-    camera.setSettings({ blurOn: e.target.checked });
+    camera.setSettings({ blurOn: e.target.checked }); // ON turns glasses OFF and wipes the preview at once
+    renderAllSettings();
+  });
+
+  /** Toggles, notes and the HUD always show the controller's real settings. */
+  function renderAllSettings() {
     renderSettings();
     renderEffect();
-  });
+    renderCamera();
+  }
   $("#t-boxes").addEventListener("change", (e) => camera.setSettings({ showBoxes: e.target.checked }));
   $$("[data-method]").forEach((p) =>
     p.addEventListener("click", () => {
@@ -275,12 +286,14 @@
     renderSettings();
   });
 
-  $$("[data-mode]").forEach((b) =>
-    b.addEventListener("click", () => {
-      $$("[data-mode]").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
-      ["privacy", "effects", "background"].forEach((m) => ($(`#p-${m}`).hidden = m !== b.dataset.mode));
-    }),
-  );
+  function selectMode(mode) {
+    $$("[data-mode]").forEach((x) => x.setAttribute("aria-selected", String(x.dataset.mode === mode)));
+    ["privacy", "effects", "background"].forEach((m) => ($(`#p-${m}`).hidden = m !== mode));
+    // Privacy mode turns glasses off. It does not turn blur on by itself: that is the Blur faces toggle.
+    if (mode === "privacy" && camera.settings.glasses) camera.setSettings({ glasses: false });
+    renderAllSettings();
+  }
+  $$("[data-mode]").forEach((b) => b.addEventListener("click", () => selectMode(b.dataset.mode)));
 
   window.i18n.apply();
   renderSettings();
