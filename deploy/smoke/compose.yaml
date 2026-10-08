@@ -11,13 +11,15 @@ services:
     ports: !reset []
 
   nginx:
-    image: nginx:1.28-alpine
+    image: nginx:1.24.0-alpine   # the server's Nginx version
     container_name: live-camera-studio-smoke-nginx
     depends_on:
       app:
         condition: service_healthy
     ports:
       - "127.0.0.1:18080:80"
+      - "127.0.0.1:18443:443"
     volumes:
+      - ${SMOKE_CERT_DIR:?run deploy/smoke/check.sh}:/etc/nginx/certs:ro
       - ../nginx/live-camera-studio-proxy.conf:/etc/nginx/snippets/live-camera-studio-proxy.conf:ro
       - ./nginx-smoke.conf:/etc/nginx/conf.d/default.conf:ro

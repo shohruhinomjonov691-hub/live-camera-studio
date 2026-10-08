@@ -1,0 +1,23 @@
+# Step 1 of 2 — HTTP bootstrap for camera.gotrips.cloud, before its certificate exists.
+# Serves only the ACME HTTP-01 challenge so certbot (webroot mode) can issue the certificate.
+# Compatible with Nginx 1.24.0. Install as its own site; do not edit other apps' sites. See deploy/nginx/README.md.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name camera.gotrips.cloud;
+
+    access_log /var/log/nginx/live-camera-studio.access.log;
+    error_log  /var/log/nginx/live-camera-studio.error.log warn;
+
+    # Own webroot, separate from any other site's.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/live-camera-studio-acme;
+        default_type "text/plain";
+    }
+
+    # Nothing else is served over plain HTTP (the camera needs HTTPS anyway).
+    location / {
+        return 404;
+    }
+}

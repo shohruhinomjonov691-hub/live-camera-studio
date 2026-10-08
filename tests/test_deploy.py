@@ -65,3 +65,28 @@ def test_dockerfile_runs_unprivileged_with_healthcheck_and_pinned_base():
 def test_license_is_mit_and_keeps_vendor_licenses():
     assert read("LICENSE").startswith("MIT License")
     assert (ROOT / "app/static/vendor/mediapipe/LICENSE").read_text().lstrip().startswith("Apache License")
+
+
+def test_nginx_sites_target_camera_gotrips_cloud_on_nginx_1_24():
+    final = read("deploy/nginx/live-camera-studio.conf.example")
+    bootstrap = read("deploy/nginx/live-camera-studio.bootstrap.conf.example")
+    for text in (final, bootstrap):
+        assert "server_name camera.gotrips.cloud;" in text
+        assert "example.com" not in text
+        # "http2 on;" only exists from Nginx 1.25.1; the server runs 1.24.0.
+        assert not re.search(r"^\s*http2\s+on\s*;", text, re.M)
+    assert re.search(r"^\s*listen 443 ssl http2;", final, re.M)
+    assert "ssl_certificate     /etc/letsencrypt/live/camera.gotrips.cloud/fullchain.pem;" in final
+    assert "ssl_certificate_key /etc/letsencrypt/live/camera.gotrips.cloud/privkey.pem;" in final
+    # Bootstrap: plain HTTP serving only the ACME webroot, no certificate referenced yet.
+    assert not re.search(r"^\s*(listen\s+(\[::\]:)?443|ssl_certificate)", bootstrap, re.M)
+    assert "/.well-known/acme-challenge/" in bootstrap and "/var/www/live-camera-studio-acme" in bootstrap
+
+
+def test_smoke_test_uses_server_nginx_version_and_requires_valid_answers():
+    assert "image: nginx:1.24.0-alpine" in read("deploy/smoke/compose.yaml")
+    script = read("deploy/smoke/check.sh")
+    assert '[ "$status" = 200 ] || fail' in script
+    assert "img.load()" in script and "json.loads" in script
+    assert "a 404 was accepted" in script and "a truncated image was accepted" in script
+    assert "--http2" in script

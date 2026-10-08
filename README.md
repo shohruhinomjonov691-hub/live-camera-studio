@@ -93,15 +93,16 @@ The image (`python:3.13.16-slim-bookworm`, pinned by digest) contains the app an
 
 ## Deploying behind an existing Nginx
 
-The camera needs HTTPS, so the app is meant to run behind the host's Nginx (no second proxy):
+The camera needs HTTPS, so the app runs behind the host's existing Nginx (1.24.0; no second proxy) at `camera.gotrips.cloud`. Step-by-step instructions — DNS, HTTP bootstrap, certificate in certbot webroot mode, final HTTPS site, verification and rollback — are in [`deploy/nginx/README.md`](deploy/nginx/README.md). Only a new site, a new snippet and a new certificate are added; other sites are not modified.
 
-1. Copy `deploy/nginx/live-camera-studio-proxy.conf` to `/etc/nginx/snippets/`.
-2. Adapt `deploy/nginx/live-camera-studio.conf.example` (domain, certificate paths, port) as its own site; leave other sites untouched.
-3. `nginx -t && systemctl reload nginx`.
+On Nginx 1.24, HTTP/2 is the `http2` parameter of `listen` (`http2 on;` needs 1.25.1) and applies to every site on the same address:port; the deploy guide says how to check this before enabling it.
 
-Uploaded photos must not be written to disk anywhere, including the proxy. The snippet streams request bodies to the app (`proxy_request_buffering off`), keeps any held body in memory (`client_body_buffer_size` ≥ the 10 MB limit), and streams responses without temp files (`proxy_buffering off`, `proxy_max_temp_file_size 0`). It does not override the app's security headers.
+Uploaded photos must not be written to disk anywhere, including the proxy. `deploy/nginx/live-camera-studio-proxy.conf` streams request bodies to the app (`proxy_request_buffering off`), keeps any held body in memory (`client_body_buffer_size` ≥ the 10 MB limit), and streams responses without temp files (`proxy_buffering off`, `proxy_max_temp_file_size 0`). It does not override the app's security headers.
 
-`deploy/smoke/check.sh` (needs Docker) builds the image, puts it behind Nginx with that snippet, sends a ~3.5 MB image to `/api/detect` and `/api/blur`, and fails if Nginx reports buffering to a temporary file. A control route with default-style buffering must report temp files, which proves the check can detect a regression. It also checks that the app container is read-only, non-root, healthy and has no filesystem changes. The check uses HTTP/1.1 to Nginx; HTTP/2 on the real server should be verified the same way (the Nginx error log reports any "buffered to a temporary file").
+Local checks (Docker):
+
+- `deploy/nginx/check-config.sh` — `nginx -t` with Nginx 1.24.0 for the bootstrap and final site files.
+- `deploy/smoke/check.sh` — the app image behind Nginx 1.24.0 with that snippet, over HTTP/1.1 and over HTTPS + HTTP/2. `/api/detect` and `/api/blur` must return 200 with a valid body (JSON of the right shape; a fully decodable JPEG of the right size) for a ~3.5 MB upload, and Nginx must report no temp-file buffering. A control route with default-style buffering must report temp files, and the validators must reject a 404, swapped bodies and a truncated image — so the check can detect both kinds of regression. It also checks that the app container is read-only, non-root, healthy and has no filesystem changes.
 
 ## API
 

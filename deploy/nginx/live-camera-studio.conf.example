@@ -1,32 +1,41 @@
-# Example server block for the EXISTING Nginx on the host (not installed by this repo).
-# 1. Copy deploy/nginx/live-camera-studio-proxy.conf to /etc/nginx/snippets/.
-# 2. Adapt this file (domain, certificate paths) and add it as its own site; do not edit other apps' sites.
-# 3. nginx -t && systemctl reload nginx
-# The app runs from compose.yaml on 127.0.0.1:${LCS_PORT:-18765}. HTTPS is required: browsers only allow the
-# camera on secure pages.
+# Step 2 of 2 — final site for camera.gotrips.cloud, after the certificate was issued (see deploy/nginx/README.md).
+# Compatible with Nginx 1.24.0: HTTP/2 is enabled with the "http2" listen parameter ("http2 on;" needs >= 1.25.1).
+# The app runs from compose.yaml on 127.0.0.1:${LCS_PORT:-18765}. HTTPS is required: browsers only allow the camera
+# on secure pages.
 
 upstream live_camera_studio {
-    server 127.0.0.1:18765;
+    server 127.0.0.1:18765;   # keep in sync with LCS_PORT in compose.yaml
     keepalive 8;
 }
 
 server {
     listen 80;
     listen [::]:80;
-    server_name camera.example.com;           # TODO: real (sub)domain
-    return 301 https://$host$request_uri;
+    server_name camera.gotrips.cloud;
+
+    # Keep serving ACME challenges for renewals.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/live-camera-studio-acme;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;                                 # Nginx >= 1.25.1; older: "listen 443 ssl http2;"
-    server_name camera.example.com;           # TODO: real (sub)domain
+    # Nginx 1.24: http2 is a listen parameter and applies to the whole address:port. If the other sites on this
+    # server listen on 443 WITHOUT http2, adding it here would switch them to HTTP/2 as well — in that case drop
+    # "http2" from these two lines (HTTP/1.1 only) rather than touching the other sites. See README.md.
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name camera.gotrips.cloud;
 
-    ssl_certificate     /etc/letsencrypt/live/camera.example.com/fullchain.pem;   # TODO
-    ssl_certificate_key /etc/letsencrypt/live/camera.example.com/privkey.pem;     # TODO
+    ssl_certificate     /etc/letsencrypt/live/camera.gotrips.cloud/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/camera.gotrips.cloud/privkey.pem;
 
-    # Request lines only (no bodies, no query strings are used by the app); no image data is logged.
+    # Request lines only (no bodies; the app uses no query strings); no image data is logged.
     access_log /var/log/nginx/live-camera-studio.access.log;
     error_log  /var/log/nginx/live-camera-studio.error.log warn;
 
