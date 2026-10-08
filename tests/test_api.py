@@ -110,6 +110,7 @@ def test_blur_rejects_bad_regions(client):
     "raw",
     [
         '[{"x": 1' + "0" * 400 + ', "y": 0, "w": 5, "h": 5}]',  # overflowed math.isfinite -> 500
+        '[{"x": 1' + "0" * 4400 + ', "y": 0, "w": 5, "h": 5}]',  # 4401 digits: json.loads ValueError -> 500
         '[{"x": 1e400, "y": 0, "w": 5, "h": 5}]',
         '[{"x": 0, "y": 0, "w": 99999, "h": 5}]',
         '[{"x": -5, "y": 0, "w": 5, "h": 5}]',

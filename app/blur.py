@@ -28,7 +28,9 @@ def parse_regions(raw: str | None) -> list[Region]:
         return []
     try:
         items = json.loads(raw)
-    except json.JSONDecodeError:
+    # ValueError also covers integers longer than Python's int digit limit (4300 by default),
+    # which json.loads rejects with a plain ValueError rather than JSONDecodeError.
+    except ValueError:
         raise ImageError(400, "Hududlar JSON formatida emas.")
     if not isinstance(items, list):
         raise ImageError(400, "Hududlar ro‘yxat bo‘lishi kerak.")
