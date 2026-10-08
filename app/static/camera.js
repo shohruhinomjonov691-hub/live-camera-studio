@@ -363,7 +363,8 @@
     }
 
     function onWorkerFailure(message) {
-      if (pendingInit) pendingInit.reject(Object.assign(new Error(message || "worker error"), { name: "WorkerError" }));
+      // stage: a crash while the detector loads is still reported as a worker failure, not as a load failure.
+      if (pendingInit) pendingInit.reject(Object.assign(new Error(message || "worker error"), { name: "WorkerError", stage: "worker" }));
       pendingInit = null;
       resetWorker();
       if (stream) fail("worker", "WorkerError");
@@ -417,7 +418,7 @@
       } catch (error) {
         if (id !== camSession) return;
         resetWorker();
-        fail("load", errorName(error));
+        fail(loadFailureStage(error), errorName(error));
         return;
       }
       if (id !== camSession) return;
@@ -447,6 +448,11 @@
       setState("idle", reason ? { reason } : null);
     }
 
+    /** Why the detector never became ready: the worker itself crashed, or the detector failed to load / timed out. */
+    function loadFailureStage(error) {
+      return error && error.stage === "worker" ? "worker" : "load";
+    }
+
     /** kind: the stage that failed (load, detector, worker, render); name: the error's class name. */
     function fail(kind, name = "Error") {
       if (frameHandle !== null) env.cancelFrame(frameHandle);
@@ -467,7 +473,7 @@
         (error) => {
           if (id !== camSession) return;
           resetWorker();
-          fail("load", errorName(error));
+          fail(loadFailureStage(error), errorName(error));
         },
       );
     }

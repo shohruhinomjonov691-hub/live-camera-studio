@@ -1445,3 +1445,37 @@ test("[ios] a crashed worker reports stage worker", async () => {
   assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "WorkerError" }]);
   assert.ok(cleared(h.env.view));
 });
+
+// ---------- Codex review: a worker crash while the detector loads keeps stage "worker" ----------
+
+test("[r-ios] a worker crash while the detector loads is reported as worker, not detector-load", async () => {
+  const h = setup();
+  await startUntilStream(h);
+  h.worker.onerror({ message: "crash" });
+  await flush();
+  await flush();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "WorkerError" }]);
+  assert.ok(!h.states.some(([state, info]) => state === "error" && info.kind === "load"), "never shown as a load failure");
+  assert.equal(viewDraws(h.env.view).length, 0);
+});
+
+test("[r-ios] a worker crash while Restart detector reloads is reported as worker", async () => {
+  const h = setup();
+  await goLive(h);
+  h.camera.restartDetector();
+  h.worker.onerror({ message: "crash" });
+  await flush();
+  await flush();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "WorkerError" }]);
+});
+
+test("[r-ios] a crash before the camera stream arrives is still reported as worker", async () => {
+  const h = setup();
+  h.camera.start();
+  await flush();
+  h.worker.onerror({ message: "crash" }); // still waiting for permission: no stream yet
+  h.gum().resolve(fakeStream());
+  await flush();
+  await flush();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "WorkerError" }]);
+});
