@@ -1,6 +1,7 @@
 "use strict";
 
 const MAX_BYTES = 10 * 1024 * 1024;
+const t = (key, params) => window.i18n.t(key, params);
 const MIN_DRAW_PX = 6; // minimum manual box size in original image pixels
 
 const state = {
@@ -16,6 +17,8 @@ const state = {
   session: 0,
   blurSeq: 0,
   draft: null,
+  status: null, // {key, params, tone}; kept as a key so it re-renders when the language changes
+  errorInfo: null, // {code, status} of the last failed detect, shown in the error card
 };
 
 let dragStart = null;
@@ -32,6 +35,10 @@ const el = {
   preview: document.getElementById("preview"),
   overlay: document.getElementById("overlay"),
   regions: document.getElementById("regions"),
+  empty: document.getElementById("up-empty"),
+  error: document.getElementById("up-error"),
+  errorMsg: document.getElementById("up-error-msg"),
+  errorCode: document.getElementById("up-error-code"),
 };
 
 /**
@@ -57,19 +64,49 @@ function rectFromPoints(a, b) {
 
 window.faceBlur = { toImagePoint, rectFromPoints, state };
 
-function setStatus(message, isError = false) {
-  el.status.textContent = message;
-  el.status.classList.toggle("error", isError);
+/** tone: "" (neutral), "ok" or "error". */
+function setStatus(key, params = {}, tone = "") {
+  state.status = key ? { key, params, tone } : null;
+  renderStatus();
 }
 
-async function errorMessage(response) {
+function renderStatus() {
+  const s = state.status;
+  el.status.textContent = s ? t(s.key, s.params) : "";
+  el.status.classList.toggle("error", Boolean(s && s.tone === "error"));
+  el.status.classList.toggle("ok", Boolean(s && s.tone === "ok"));
+}
+
+/** The server sends a stable `code`; its English `detail` is never shown. */
+async function errorInfo(response) {
+  let code = null;
   try {
     const body = await response.json();
-    if (body && body.detail) return body.detail;
+    if (body && typeof body.code === "string") code = body.code;
   } catch (_) {
     /* not JSON */
   }
-  return `Server xatosi (${response.status}).`;
+  return { code, status: response.status };
+}
+
+function errorKey(info) {
+  return info.code && window.i18n.has(`error.${info.code}`) ? `error.${info.code}` : "error.unknown";
+}
+
+function showErrorCard(info) {
+  el.empty.hidden = true;
+  el.workspace.hidden = true;
+  el.error.hidden = false;
+  state.errorInfo = info;
+  renderErrorCard();
+  setStatus(null);
+}
+
+function renderErrorCard() {
+  if (el.error.hidden || !state.errorInfo) return;
+  const info = state.errorInfo;
+  el.errorMsg.textContent = t(errorKey(info), { status: info.status });
+  el.errorCode.textContent = [info.status, info.code].filter(Boolean).join(" · ");
 }
 
 function resetResult() {
@@ -84,12 +121,13 @@ async function onFileSelected() {
   if (!file) return;
   el.file.value = "";
 
+  // Client-side checks keep the current photo; the server checks again.
   if (!["image/jpeg", "image/png"].includes(file.type)) {
-    setStatus("Faqat JPEG yoki PNG rasm tanlang.", true);
+    setStatus("error.unsupported_format", {}, "error");
     return;
   }
   if (file.size > MAX_BYTES) {
-    setStatus("Fayl 10 MB dan oshmasligi kerak.", true);
+    setStatus("error.file_too_large", {}, "error");
     return;
   }
 
@@ -108,8 +146,10 @@ async function onFileSelected() {
   dragStart = null;
   el.preview.removeAttribute("src");
   el.workspace.hidden = true;
+  el.error.hidden = true;
+  el.empty.hidden = true;
   setDrawMode(false);
-  setStatus("Yuzlar aniqlanmoqda…");
+  setStatus("upload.detecting");
 
   let data;
   try {
@@ -120,13 +160,13 @@ async function onFileSelected() {
     });
     if (session !== state.session) return;
     if (!response.ok) {
-      const message = await errorMessage(response);
-      if (session === state.session) setStatus(message, true);
+      const info = await errorInfo(response);
+      if (session === state.session) showErrorCard(info);
       return;
     }
     data = await response.json();
   } catch (_) {
-    if (session === state.session) setStatus("Serverga ulanib bo‘lmadi.", true);
+    if (session === state.session) showErrorCard({ code: "network", status: null });
     return;
   }
   if (session !== state.session) return; // another file was chosen while this one was detected
@@ -149,7 +189,7 @@ async function requestBlur() {
   // A result is current only if no newer blur started and no other file was chosen.
   const current = () => seq === state.blurSeq && session === state.session;
   el.download.setAttribute("aria-disabled", "true");
-  setStatus("Xiralashtirilmoqda…");
+  setStatus("upload.blurring");
 
   const regions = state.regions.map(({ x, y, w, h, source }) => ({ x, y, w, h, source }));
   try {
@@ -160,8 +200,8 @@ async function requestBlur() {
     });
     if (!current()) return;
     if (!response.ok) {
-      const message = await errorMessage(response);
-      if (current()) setStatus(message, true);
+      const info = await errorInfo(response);
+      if (current()) setStatus(errorKey(info), { status: info.status }, "error");
       return;
     }
     const blob = await response.blob();
@@ -172,9 +212,9 @@ async function requestBlur() {
     el.download.href = state.resultUrl;
     el.download.download = downloadName(file.name, blob.type);
     el.download.setAttribute("aria-disabled", "false");
-    setStatus(state.regions.length ? "Preview tayyor. Tekshirib, yuklab oling." : "Xiralashtiriladigan hudud yo‘q.");
+    setStatus(state.regions.length ? "upload.ready" : "upload.noRegions", {}, state.regions.length ? "ok" : "");
   } catch (_) {
-    if (current()) setStatus("Serverga ulanib bo‘lmadi.", true);
+    if (current()) setStatus("error.network", {}, "error");
   }
 }
 
@@ -193,7 +233,7 @@ function percentStyle(node, r) {
 function render() {
   const autoCount = state.regions.filter((r) => r.source === "auto").length;
   const manualCount = state.regions.length - autoCount;
-  el.count.textContent = `Avtomatik topilgan yuzlar: ${autoCount}` + (manualCount ? ` · qo‘lda: ${manualCount}` : "");
+  el.count.textContent = t("upload.count", { auto: autoCount, manual: manualCount });
 
   el.overlay.replaceChildren();
   state.regions.forEach((r, index) => {
@@ -217,7 +257,7 @@ function render() {
   if (!state.regions.length) {
     const li = document.createElement("li");
     li.className = "empty";
-    li.textContent = "Hudud yo‘q. Yuz o‘tkazib yuborilgan bo‘lsa, qo‘lda qo‘shing.";
+    li.textContent = t("upload.none");
     el.regions.append(li);
     return;
   }
@@ -225,13 +265,15 @@ function render() {
     const li = document.createElement("li");
     const tag = document.createElement("span");
     tag.className = `tag ${r.source}`;
-    tag.textContent = r.source === "auto" ? "avtomatik" : "qo‘lda";
+    tag.textContent = t(r.source === "auto" ? "tag.auto" : "tag.manual");
     const text = document.createElement("span");
-    text.textContent = `#${index + 1} · ${r.w}×${r.h} px`;
+    text.className = "what";
+    text.textContent = t("region.size", { n: index + 1, w: r.w, h: r.h });
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.textContent = "Olib tashlash";
-    remove.setAttribute("aria-label", `${index + 1}-hududni olib tashlash`);
+    remove.className = "btn";
+    remove.textContent = t("region.remove");
+    remove.setAttribute("aria-label", t("region.removeAria", { n: index + 1 }));
     remove.addEventListener("click", () => {
       state.regions = state.regions.filter((item) => item.id !== r.id);
       render();
@@ -292,3 +334,9 @@ el.overlay.addEventListener("pointercancel", () => {
 el.file.addEventListener("change", onFileSelected);
 el.toggle.addEventListener("change", render);
 el.draw.addEventListener("click", () => setDrawMode(el.draw.getAttribute("aria-pressed") !== "true"));
+document.querySelectorAll("[data-pick-file]").forEach((button) => button.addEventListener("click", () => el.file.click()));
+window.i18n.onChange(() => {
+  renderStatus();
+  renderErrorCard();
+  if (!el.workspace.hidden) render();
+});

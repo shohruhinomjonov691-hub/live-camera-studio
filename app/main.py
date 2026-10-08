@@ -27,10 +27,14 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
+    # 'wasm-unsafe-eval' lets the vendored MediaPipe WebAssembly compile; it does not allow JS eval.
+    # The same header is sent with the worker script, which is where the detector runs.
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; "
-        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; "
+        "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; "
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     )
+    response.headers["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -38,18 +42,18 @@ async def security_headers(request: Request, call_next):
 
 @app.exception_handler(ImageError)
 async def image_error_handler(request: Request, exc: ImageError) -> JSONResponse:
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+    return JSONResponse(status_code=exc.status_code, content={"code": exc.code, "detail": exc.message})
 
 
 async def read_limited_body(request: Request) -> bytes:
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES:
-        raise ImageError(413, f"Fayl {MAX_UPLOAD_BYTES // (1024 * 1024)} MB dan oshmasligi kerak.")
+        raise ImageError(413, "file_too_large", f"The file must be at most {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
         if len(body) > MAX_UPLOAD_BYTES:
-            raise ImageError(413, f"Fayl {MAX_UPLOAD_BYTES // (1024 * 1024)} MB dan oshmasligi kerak.")
+            raise ImageError(413, "file_too_large", f"The file must be at most {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
     return bytes(body)
 
 

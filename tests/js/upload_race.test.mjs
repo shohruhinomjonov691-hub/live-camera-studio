@@ -7,7 +7,9 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const APP_JS = readFileSync(new URL("../../app/static/app.js", import.meta.url), "utf8");
+const read = (path) => readFileSync(new URL(`../../app/static/${path}`, import.meta.url), "utf8");
+const APP_JS = read("app.js");
+const I18N_JS = [read("i18n/en.js"), read("i18n/ko.js"), read("i18n.js")];
 
 class FakeElement {
   constructor(id = "") {
@@ -61,6 +63,9 @@ function loadApp() {
     document: {
       getElementById: (id) => (elements[id] ||= new FakeElement(id)),
       createElement: () => new FakeElement(),
+      querySelectorAll: () => [],
+      documentElement: {},
+      title: "",
     },
     fetch: (url, init) => {
       const d = deferred();
@@ -74,6 +79,7 @@ function loadApp() {
   };
   context.window = context;
   vm.createContext(context);
+  I18N_JS.forEach((code) => vm.runInContext(code, context));
   vm.runInContext(APP_JS, context);
   const el = (id) => elements[id];
   const choose = (file) => {
@@ -161,4 +167,24 @@ test("an error reply for A does not overwrite B's status", async () => {
   await flush();
   assert.notEqual(el("status").textContent, "A is broken");
   assert.equal(el("workspace").hidden, false);
+});
+
+test("a server error is shown from its code, in the chosen language", async () => {
+  const { el, calls, choose, context } = loadApp();
+  choose(fileA);
+  calls[0].reply({ ok: false, status: 415, json: async () => ({ code: "unsupported_format", detail: "English debug text" }) });
+  await flush();
+  assert.equal(el("up-error").hidden, false);
+  assert.equal(el("up-error-msg").textContent, "Only JPEG or PNG images are accepted.");
+  assert.equal(el("up-error-code").textContent, "415 · unsupported_format");
+  context.i18n.setLang("ko");
+  assert.equal(el("up-error-msg").textContent, "JPEG 또는 PNG 이미지만 사용할 수 있습니다.");
+});
+
+test("an unknown error code falls back to a generic message with the HTTP status", async () => {
+  const { el, calls, choose } = loadApp();
+  choose(fileA);
+  calls[0].reply({ ok: false, status: 502, json: async () => { throw new Error("not json"); } });
+  await flush();
+  assert.equal(el("up-error-msg").textContent, "Something went wrong (HTTP 502).");
 });

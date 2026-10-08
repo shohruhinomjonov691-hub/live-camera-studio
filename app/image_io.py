@@ -15,9 +15,12 @@ MEDIA_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png"}
 
 
 class ImageError(Exception):
-    def __init__(self, status_code: int, message: str) -> None:
+    """A client error. `code` is stable and translated by the UI; `message` is English, for debugging only."""
+
+    def __init__(self, status_code: int, code: str, message: str) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
         self.message = message
 
 
@@ -46,27 +49,27 @@ def sniff_format(data: bytes) -> str | None:
 
 def check_dimensions(width: int, height: int) -> None:
     if width <= 0 or height <= 0:
-        raise ImageError(422, "Rasm o‘lchami noto‘g‘ri.")
+        raise ImageError(422, "corrupt_image", "Image dimensions are invalid.")
     if max(width, height) > MAX_SIDE:
-        raise ImageError(413, f"Rasm tomoni {MAX_SIDE} pikseldan oshmasligi kerak.")
+        raise ImageError(413, "image_too_large", f"The longest side must be at most {MAX_SIDE} px.")
     if width * height > MAX_PIXELS:
-        raise ImageError(413, f"Rasm {MAX_PIXELS // 1_000_000} megapikseldan oshmasligi kerak.")
+        raise ImageError(413, "image_too_large", f"The image must be at most {MAX_PIXELS // 1_000_000} megapixels.")
 
 
 def decode_image(data: bytes) -> DecodedImage:
     if not data:
-        raise ImageError(400, "Fayl bo‘sh.")
+        raise ImageError(400, "empty_file", "The file is empty.")
     if len(data) > MAX_UPLOAD_BYTES:
-        raise ImageError(413, f"Fayl {MAX_UPLOAD_BYTES // (1024 * 1024)} MB dan oshmasligi kerak.")
+        raise ImageError(413, "file_too_large", f"The file must be at most {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
 
     fmt = sniff_format(data)
     if fmt is None:
-        raise ImageError(415, "Faqat JPEG yoki PNG rasm qabul qilinadi.")
+        raise ImageError(415, "unsupported_format", "Only JPEG or PNG images are accepted.")
 
     try:
         with Image.open(io.BytesIO(data)) as img:
             if img.format != fmt:
-                raise ImageError(415, "Fayl mazmuni JPEG yoki PNG formatiga mos emas.")
+                raise ImageError(415, "unsupported_format", "The file content does not match JPEG or PNG.")
             # Header-only size check before decoding pixel data.
             check_dimensions(*img.size)
             img.load()
@@ -76,7 +79,7 @@ def decode_image(data: bytes) -> DecodedImage:
     except ImageError:
         raise
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError):
-        raise ImageError(422, "Rasmni o‘qib bo‘lmadi: fayl buzilgan yoki qo‘llab-quvvatlanmaydi.")
+        raise ImageError(422, "corrupt_image", "The image could not be decoded.")
 
     return DecodedImage(pixels=pixels, format=fmt)
 

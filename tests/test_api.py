@@ -19,7 +19,7 @@ def test_health_and_index(client):
     assert client.get("/health").json() == {"status": "ok"}
     page = client.get("/")
     assert page.status_code == 200
-    assert "Avtomatik aniqlash barcha yuzlarni topishni kafolatlamaydi" in page.text
+    assert "Automatic detection does not guarantee that every face is found." in page.text
 
 
 def test_detect_returns_dimensions_and_faces(client):
@@ -44,6 +44,61 @@ def test_detect_rejects_bad_files(client, payload, status):
     response = client.post("/api/detect", content=payload)
     assert response.status_code == status
     assert "detail" in response.json()
+
+
+@pytest.mark.parametrize(
+    ("payload", "status", "code"),
+    [
+        (b"", 400, "empty_file"),
+        (b"plain text", 415, "unsupported_format"),
+        (b"\x89PNG\r\n\x1a\n" + b"\x00" * 50, 422, "corrupt_image"),
+    ],
+)
+def test_errors_carry_stable_codes(client, payload, status, code):
+    # The UI translates `code` (EN/KO); `detail` is English and only for debugging.
+    body = client.post("/api/detect", content=payload).json()
+    assert body["code"] == code
+    assert body["detail"].isascii()
+
+
+def test_size_and_region_errors_carry_codes(client, monkeypatch):
+    assert client.post("/api/detect", content=make_png(9000, 10)).json()["code"] == "image_too_large"
+    bad = client.post("/api/blur", content=make_jpeg(), headers={"X-Regions": "{oops"})
+    assert bad.json()["code"] == "invalid_regions"
+    many = json.dumps([{"x": 0, "y": 0, "w": 1, "h": 1}] * 101)
+    assert client.post("/api/blur", content=make_jpeg(), headers={"X-Regions": many}).json()["code"] == "too_many_regions"
+    monkeypatch.setattr("app.main.MAX_UPLOAD_BYTES", 1000)
+    assert client.post("/api/detect", content=make_jpeg(200, 200)).json()["code"] == "file_too_large"
+
+
+def test_security_headers_allow_wasm_and_camera_only_for_self(client):
+    headers = client.get("/").headers
+    csp = headers["content-security-policy"]
+    assert "script-src 'self' 'wasm-unsafe-eval';" in csp
+    assert "'unsafe-eval'" not in csp.replace("'wasm-unsafe-eval'", "")
+    assert "'unsafe-inline'" not in csp
+    assert "worker-src 'self'" in csp and "connect-src 'self'" in csp
+    assert headers["permissions-policy"] == "camera=(self), microphone=(), geolocation=()"
+    # The worker gets the same CSP, which is what lets the detector compile its WebAssembly.
+    worker = client.get("/static/detector-worker.mjs")
+    assert worker.status_code == 200
+    assert worker.headers["content-security-policy"] == csp
+    assert worker.headers["content-type"].startswith("text/javascript")
+
+
+def test_page_has_no_inline_script_or_style(client):
+    page = client.get("/").text
+    assert "<script>" not in page and "<style" not in page and "style=" not in page
+    assert "onclick" not in page.lower()
+
+
+def test_vendored_mediapipe_files_are_served(client):
+    base = "/static/vendor/mediapipe"
+    wasm = client.get(f"{base}/tasks-vision-1.0.1/wasm/vision_wasm_module_internal.wasm")
+    assert wasm.status_code == 200 and wasm.headers["content-type"] == "application/wasm"
+    for path in ("tasks-vision-1.0.1/vision_bundle.mjs", "tasks-vision-1.0.1/wasm/vision_wasm_module_internal.js",
+                 "models/blaze_face_short_range.tflite", "LICENSE", "SOURCES.md"):
+        assert client.get(f"{base}/{path}").status_code == 200, path
 
 
 def test_rejects_body_over_limit(client, monkeypatch):

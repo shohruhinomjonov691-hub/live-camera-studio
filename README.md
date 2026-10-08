@@ -1,28 +1,56 @@
-# Face Blur
+# Live Camera Studio
 
-A small web app that detects faces in a photo, blurs them, and lets you download the result. Faces the detector misses can be covered by drawing a rectangle by hand.
+A small web app that blurs faces — live from the camera, or in an uploaded photo. Live frames are processed entirely in the browser; uploaded photos are processed in server memory and never stored.
 
-> **Automatic detection does not guarantee that every face is found.** Always review the preview before downloading and add manual regions where needed. The UI shows this warning permanently (in Uzbek).
+> **Automatic detection does not guarantee that every face is found.** Review the preview before you download anything, and add manual regions to uploaded photos where needed. The UI shows this warning permanently.
 
-The detector is reused from the `cv_opencv.ipynb` notebook in [computer_vision](https://github.com/shohruhinomjonov691-hub/computer_vision): OpenCV's bundled frontal-face Haar cascade. No training, model download, face recognition, or paid API is involved. The original notebooks are not modified.
+The UI is in English by default, with a Korean language switcher; the choice is remembered in the browser.
 
 ## Features
 
+**Live camera** (in the browser)
+
+- Camera on/off, mirror, front/back switch (shown when the device has more than one camera).
+- Real-time face blur: pixelate + Gaussian, Gaussian, or a solid block, in three strengths; optional face boxes on the preview.
+- Fail-closed privacy mode: while face blur is on, the whole preview is hidden when the detector is loading, has failed, is slower than 1 s, or finds no face (see [Privacy](#privacy)). Hiding reduces exposure; it is **not** guaranteed anonymization.
+- Clear states for permission prompt, blocked permission, no/busy camera, camera unplugged, insecure page and detector errors.
+- Glasses, background effects and snapshots are planned for later updates and are not part of this version.
+
+**Photo upload** (the original Face Blur flow)
+
 - JPEG/PNG upload → face detection → blurred preview → download.
-- Detected face count and a bounding-box toggle.
-- Manual rectangles drawn on the responsive preview (mouse or touch); coordinates are mapped to original image pixels.
-- Remove any automatic or manual region before downloading.
-- Output is re-encoded from raw pixels in the input format, so EXIF (including GPS), ICC and PNG text metadata are not carried over. EXIF orientation is applied first, so what you see is what is processed.
+- Detected face count and a bounding-box toggle; manual rectangles drawn on the responsive preview (mouse or touch), mapped to original image pixels; remove any region before downloading.
+- Output is re-encoded from raw pixels in the input format, so EXIF (including GPS), ICC and PNG text metadata are not carried over. EXIF orientation is applied first.
+
+## Detectors
+
+| Flow | Detector | Where it runs |
+| --- | --- | --- |
+| Live camera | MediaPipe Face Detector (BlazeFace short range), `@mediapipe/tasks-vision` 1.0.1 | Browser, in a module Web Worker |
+| Photo upload | OpenCV frontal-face Haar cascade (reused from `cv_opencv.ipynb` in [computer_vision](https://github.com/shohruhinomjonov691-hub/computer_vision)) | Server, in memory |
+
+MediaPipe files are vendored under `app/static/vendor/mediapipe/` (no CDN). Sources, exact versions, SHA-256 hashes and licenses (Apache-2.0 for the package and the model) are recorded in [`SOURCES.md`](app/static/vendor/mediapipe/SOURCES.md). The model card puts faces looking away, strongly tilted, or further than about 2 m out of scope. No face recognition, training or paid API is involved.
 
 ## Privacy
 
+Live camera:
+
+- Camera frames never leave the browser: the camera code makes no network requests, and frames go only to a same-origin worker as transferred `ImageBitmap`s.
+- The raw `<video>` is never shown. Each frame is captured once; the detector gets a copy and the blur is applied to that same frame with that frame's boxes — the preview never mixes old boxes with a newer frame.
+- While a result is pending, the preview keeps the last processed frame; after 1 s, on zero faces (with blur on) or on any error, the canvas is cleared.
+- Every camera start is a session. A stream granted after Cancel, and detector results that arrive after Stop, are discarded (tracks stopped, bitmaps closed). Stop, hiding the page, closing it, switching to Photo upload and a camera that ends all stop the tracks and the render loop and clear the canvas.
+- Turning face blur off is a deliberate user choice: the live preview then shows faces unblurred, and the UI says so.
+
+Photo upload:
+
 - Images are processed in memory only. They are not written to disk, a database, or logs.
 - The API reads the raw request body instead of multipart `UploadFile`, because Starlette spools uploads larger than 1 MB to a temporary file.
-- API responses are sent with `Cache-Control: no-store`; the page uses a strict Content-Security-Policy.
 - The server's access log contains only method, path and status. Region coordinates travel in a request header, not in the URL.
-- The browser keeps the selected file and result in memory (object URLs) until the page is closed or another file is chosen.
+- The browser keeps the selected file and result in memory (object URLs) until the page is closed or another file is chosen. Replies for a previously chosen file are discarded.
 
-## Limits and validation
+Headers: `Content-Security-Policy` allows only same-origin scripts, styles, workers and connections, plus `'wasm-unsafe-eval'` so the vendored WebAssembly can compile (it does not allow JavaScript `eval`); no inline scripts or styles. `Permissions-Policy: camera=(self), microphone=(), geolocation=()`. API responses use `Cache-Control: no-store`.
+
+## Limits and validation (upload)
 
 | Check | Limit |
 | --- | --- |
@@ -32,7 +60,7 @@ The detector is reused from the `cv_opencv.ipynb` notebook in [computer_vision](
 | Regions per request | ≤ 100 |
 | Region coordinates | `0 ≤ x, y ≤ 8000`, `1 ≤ w, h ≤ 8000`; NaN, infinity and oversized numbers are rejected with `400` |
 
-Invalid input returns `400`, `413`, `415` or `422` with a JSON `detail` message.
+Errors return `400`, `413`, `415` or `422` with `{"code": "...", "detail": "..."}`. The UI translates the stable `code` (`empty_file`, `unsupported_format`, `file_too_large`, `image_too_large`, `corrupt_image`, `invalid_regions`, `too_many_regions`); `detail` is English and only for debugging.
 
 ## Run locally
 
@@ -45,7 +73,7 @@ pip install -r requirements-dev.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Open http://127.0.0.1:8765.
+Open http://127.0.0.1:8765. The camera works only on `localhost` or HTTPS. The live detector needs a browser with module workers and WebAssembly SIMD. Only Chrome has been tested so far; Safari before 18 has no canvas filters, so its blur falls back to pixelation only.
 
 ## API
 
@@ -55,43 +83,59 @@ Open http://127.0.0.1:8765.
 | `POST` | `/api/detect` | raw JPEG/PNG bytes | `{"width", "height", "count", "faces": [{"x","y","w","h"}]}` in original (orientation-corrected) pixels |
 | `POST` | `/api/blur` | raw JPEG/PNG bytes; header `X-Regions: [{"x","y","w","h","source":"auto"\|"manual"}]` | blurred image, same format, no metadata |
 
-Automatic regions are padded by 15% on each side; manual regions are blurred exactly as drawn.
+Automatic upload regions are padded by 15% on each side; manual regions are blurred exactly as drawn. Live-camera boxes are padded by 25%, because BlazeFace boxes are tighter than Haar boxes.
 
 ## Tests
 
 ```bash
 pytest -q
-```
-
-Upload-flow race regressions (stale detect/blur replies after choosing another file) run with Node's built-in test runner, no packages needed:
-
-```bash
 node --test tests/js/*.test.mjs
 ```
 
-Unit and API tests cover invalid/corrupt files, size and pixel limits, EXIF orientation, alpha flattening, region parsing and clipping, blur confined to regions, metadata stripping (EXIF/GPS, PNG text), and that a >1 MB upload opens no file for writing (checked with a Python audit hook) and adds nothing to the temp or project directories.
+- Python: invalid/corrupt files, size and pixel limits, EXIF orientation, alpha flattening, region parsing and bounds, error codes, security headers (CSP, `Permissions-Policy`, worker CSP, no inline script/style), vendored files served, blur confined to regions, metadata stripping, and that a >1 MB upload opens no file for writing and adds nothing to the temp or project directories.
+- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use), and EN/KO coverage plus the saved language choice.
 
-These tests use synthetic images. **They do not measure face-detection quality.**
+These tests use synthetic images and fakes. **They do not measure face-detection quality.**
+
+### Live camera measurements
+
+Measured 2026-10-08 on a MacBook Air (Apple M2, 8 cores, macOS 26.6.2), headless Chrome 154, MediaPipe running on the CPU (XNNPACK) in a Web Worker, 1280×720 frames. The "camera" was Chrome's fake capture device fed with MediaPipe's own test portrait (a still photo), **not a real webcam**:
+
+| Metric | Result |
+| --- | --- |
+| Processed frames per second | 30 (= the fake camera's 30 fps; one detection per new video frame) |
+| Detector time per frame | p50 7.4 ms, p95 8.7 ms |
+| Capture → displayed latency | p50 7.6 ms, p95 9.0 ms |
+| Detector start (worker, WASM, model) | about 0.1 s after the files are cached |
+
+A real webcam on this machine, and phones, have **not** been tested yet.
 
 ## Detection evaluation — not done yet
 
-No real evaluation images have been provided, so precision/recall/count error have **not** been measured. The planned evaluation:
+No real evaluation images have been provided, so precision/recall/count error have **not** been measured for either detector. The planned evaluation:
 
 - 20–30 images with manually annotated face boxes, from your own, consented, or license-checked sources. Images are never committed (`eval/images/` is ignored).
 - Metrics: face-level recall at IoU ≥ 0.5 (primary — a missed face is a privacy failure), precision, and per-image count error; small and profile/rotated faces reported separately.
 - Compare 2–3 `scaleFactor`/`minNeighbors` settings in `app/config.py` and record the chosen one.
 
-Known limitation until then: the Haar cascade is frontal-face only and is likely to miss small, rotated, profile or occluded faces.
+Known limitations until then: the Haar cascade is frontal-face only; BlazeFace short range targets faces within about 2 m of a front-facing camera. Both are likely to miss small, rotated, profile or occluded faces.
 
 ## Project layout
 
 ```text
-app/main.py        FastAPI app, body size limit, security headers
-app/image_io.py    Format/size validation, decode with EXIF orientation, metadata-free encode
-app/detector.py    Haar cascade detection on a downscaled grayscale copy
-app/blur.py        Region parsing, padding/clipping, pixelate + Gaussian blur
-app/static/        HTML/CSS/JS frontend
-tests/             pytest suite
+app/main.py                   FastAPI app, body size limit, security headers
+app/image_io.py               Format/size validation, decode with EXIF orientation, metadata-free encode
+app/detector.py               Haar cascade detection on a downscaled grayscale copy (upload)
+app/blur.py                   Region parsing, padding/clipping, pixelate + Gaussian blur (upload)
+app/static/index.html         Page (no inline script or style)
+app/static/shell.js           Tabs, language switcher, live camera UI
+app/static/camera.js          Live camera controller: lifecycle, fail-closed frame pipeline, canvas blur
+app/static/detector-worker.mjs  MediaPipe Face Detector in a module worker
+app/static/app.js             Photo upload flow
+app/static/i18n.js, i18n/     EN/KO strings and the saved language choice
+app/static/vendor/mediapipe/  Vendored MediaPipe package files, model, LICENSE, SOURCES.md
+design/live-camera-studio/    Design mockup and technical plan
+tests/                        pytest suite; tests/js/ Node tests
 ```
 
 ## Author

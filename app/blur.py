@@ -31,35 +31,35 @@ def parse_regions(raw: str | None) -> list[Region]:
     # ValueError also covers integers longer than Python's int digit limit (4300 by default),
     # which json.loads rejects with a plain ValueError rather than JSONDecodeError.
     except ValueError:
-        raise ImageError(400, "Hududlar JSON formatida emas.")
+        raise ImageError(400, "invalid_regions", "Regions header is not valid JSON.")
     if not isinstance(items, list):
-        raise ImageError(400, "Hududlar ro‘yxat bo‘lishi kerak.")
+        raise ImageError(400, "invalid_regions", "Regions must be a JSON list.")
     if len(items) > MAX_REGIONS:
-        raise ImageError(400, f"Ko‘pi bilan {MAX_REGIONS} ta hudud yuborish mumkin.")
+        raise ImageError(400, "too_many_regions", f"At most {MAX_REGIONS} regions are allowed.")
 
     regions = []
     for item in items:
         if not isinstance(item, dict):
-            raise ImageError(400, "Har bir hudud obyekt bo‘lishi kerak.")
+            raise ImageError(400, "invalid_regions", "Each region must be an object.")
         values = []
         for key in ("x", "y", "w", "h"):
             value = item.get(key)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ImageError(400, f"Hududdagi '{key}' qiymati noto‘g‘ri.")
+                raise ImageError(400, "invalid_regions", f"Region '{key}' must be a finite number.")
             # Check floats for NaN/inf, then compare against the bounds before any conversion:
             # JSON integers are unbounded, and math.isfinite(10**400) raises OverflowError.
             if isinstance(value, float) and not math.isfinite(value):
-                raise ImageError(400, f"Hududdagi '{key}' qiymati noto‘g‘ri.")
+                raise ImageError(400, "invalid_regions", f"Region '{key}' must be a finite number.")
             low = 0 if key in ("x", "y") else 1
             if not low <= value <= MAX_SIDE:
-                raise ImageError(400, f"Hududdagi '{key}' qiymati {low}–{MAX_SIDE} oralig‘ida bo‘lishi kerak.")
+                raise ImageError(400, "invalid_regions", f"Region '{key}' must be between {low} and {MAX_SIDE}.")
             values.append(round(value))
         source = item.get("source", "manual")
         if source not in SOURCES:
-            raise ImageError(400, "Hudud manbasi 'auto' yoki 'manual' bo‘lishi kerak.")
+            raise ImageError(400, "invalid_regions", "Region source must be 'auto' or 'manual'.")
         x, y, w, h = values
         if w <= 0 or h <= 0:
-            raise ImageError(400, "Hudud kengligi va balandligi musbat bo‘lishi kerak.")
+            raise ImageError(400, "invalid_regions", "Region width and height must be positive.")
         regions.append(Region(x, y, w, h, source))
     return regions
 

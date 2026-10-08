@@ -1,56 +1,273 @@
 <!doctype html>
-<html lang="uz">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Face Blur</title>
+  <title>Live Camera Studio</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/style.css">
+  <!-- No inline scripts or styles: the CSP allows only same-origin files. -->
+  <script src="/static/i18n/en.js" defer></script>
+  <script src="/static/i18n/ko.js" defer></script>
+  <script src="/static/i18n.js" defer></script>
+  <script src="/static/camera.js" defer></script>
   <script src="/static/app.js" defer></script>
+  <script src="/static/shell.js" defer></script>
 </head>
 <body>
-  <main class="page">
-    <header class="header">
-      <h1>Face Blur</h1>
-      <p>Rasmdagi yuzlarni xiralashtiring va natijani yuklab oling. Rasm serverda saqlanmaydi.</p>
-    </header>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Live Camera Studio</span></div>
+  <nav class="tabs" role="tablist" data-i18n-aria="tab.label" aria-label="Section">
+    <button type="button" role="tab" id="tab-camera" data-tab="camera" aria-selected="true" aria-controls="view-camera" data-i18n="tab.camera">Live camera</button>
+    <button type="button" role="tab" id="tab-upload" data-tab="upload" aria-selected="false" aria-controls="view-upload" data-i18n="tab.upload">Photo upload</button>
+  </nav>
+  <div class="top-right">
+    <span class="privacy-pill" data-i18n-title="pill.local.title"><i></i><span data-i18n="pill.local">Live frames stay on this device</span></span>
+    <div class="lang" role="group" data-i18n-aria="lang.label" aria-label="Language">
+      <button type="button" data-lang="en" lang="en" aria-pressed="true">EN</button>
+      <button type="button" data-lang="ko" lang="ko" aria-pressed="false">한국어</button>
+    </div>
+  </div>
+</header>
+
+<!-- ============ LIVE CAMERA ============ -->
+<main id="view-camera" class="layout" role="tabpanel" aria-labelledby="tab-camera">
+  <section class="stage-col">
+    <div class="stage" id="cam-stage">
+      <!-- The raw video is only a source for captured frames and is never displayed. -->
+      <video id="cam-video" class="source-video" muted playsinline aria-hidden="true"></video>
+      <canvas id="cam-view" class="cam-canvas mirrored" aria-label="Processed camera preview"></canvas>
+      <canvas id="cam-overlay" class="cam-canvas mirrored" aria-hidden="true"></canvas>
+
+      <div class="hud" id="hud" hidden>
+        <span class="chip live"><span class="dot"></span><span data-i18n="hud.live">LIVE</span></span>
+        <span class="chip" id="chip-faces"></span>
+        <span class="chip warn" id="chip-bluroff" hidden data-i18n="hud.blurOff">Face blur off</span>
+        <span class="chip right" id="chip-perf"></span>
+      </div>
+
+      <div class="overlay-state" id="ov-idle">
+        <div class="overlay-card">
+          <div class="state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
+          <h2 data-i18n="idle.title">Camera is off</h2>
+          <p id="idle-paused" class="paused" hidden data-i18n="idle.paused">The camera was turned off because the page was hidden.</p>
+          <p data-i18n="idle.body">Turn on the camera to blur faces in real time.</p>
+          <div class="actions">
+            <button type="button" class="btn primary" data-act="start" data-i18n="idle.cta">Turn on camera</button>
+            <button type="button" class="btn ghost" data-goto="upload" data-i18n="idle.alt">Upload a photo</button>
+          </div>
+          <p class="fineprint" data-i18n="idle.fine">The camera works only on localhost or HTTPS.</p>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-insecure" hidden>
+        <div class="overlay-card">
+          <div class="state-icon warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
+          <h2 data-i18n="insecure.title">The camera needs a secure page</h2>
+          <p data-i18n="insecure.body">Open this app on localhost or over HTTPS to use the camera.</p>
+          <div class="actions"><button type="button" class="btn ghost" data-goto="upload" data-i18n="idle.alt">Upload a photo</button></div>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-prompt" hidden>
+        <span class="prompt-arrow"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg><span data-i18n="prompt.arrow">Answer the browser prompt</span></span>
+        <div class="overlay-card">
+          <div class="spinner" aria-hidden="true"></div>
+          <h2 data-i18n="prompt.title">Waiting for camera permission</h2>
+          <p data-i18n="prompt.body">Choose “Allow” next to the address bar.</p>
+          <div class="actions"><button type="button" class="btn ghost" data-act="stop" data-i18n="prompt.cancel">Cancel</button></div>
+          <p class="fineprint" data-i18n="prompt.fine"></p>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-loading" hidden>
+        <div class="overlay-card">
+          <h2 data-i18n="loading.title">Getting ready…</h2>
+          <ul class="steps">
+            <li class="done" data-i18n="loading.s1">Camera permission granted</li>
+            <li class="now" data-i18n="loading.s2">Starting video stream</li>
+            <li data-i18n="loading.s3">Loading face detector (local file)</li>
+          </ul>
+          <p class="fineprint" data-i18n="loading.fine">The preview stays hidden until the detector is ready.</p>
+        </div>
+      </div>
+
+      <!-- Fail-closed cover: sits under the HUD and dock so the camera can still be turned off. -->
+      <div class="overlay-state cover" id="ov-hidden" hidden>
+        <div class="overlay-card">
+          <div class="state-icon warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17.9 17.9A10 10 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.1-5.9M9.9 4.2A9 9 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.2 3.2M1 1l22 22"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/></svg></div>
+          <h2 data-i18n="hidden.title">Preview hidden</h2>
+          <p id="hidden-why" data-i18n="hidden.noface"></p>
+          <p class="fineprint" data-i18n="hidden.note">Hiding reduces exposure but is not guaranteed anonymization.</p>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-denied" hidden>
+        <div class="overlay-card">
+          <div class="state-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 1l22 22M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/></svg></div>
+          <h2 data-i18n="denied.title">Camera access was blocked</h2>
+          <ol>
+            <li data-i18n="denied.s1"></li>
+            <li data-i18n="denied.s2"></li>
+            <li data-i18n="denied.s3"></li>
+          </ol>
+          <div class="actions">
+            <button type="button" class="btn primary" data-act="start" data-i18n="denied.cta">Try again</button>
+            <button type="button" class="btn ghost" data-goto="upload" data-i18n="denied.alt">Switch to photo upload</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-nocam" hidden>
+        <div class="overlay-card">
+          <div class="state-icon warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/><path d="M6 10l5 5M11 10l-5 5"/></svg></div>
+          <h2 data-i18n="nocam.title">No camera available</h2>
+          <p data-i18n="nocam.body"></p>
+          <div class="actions">
+            <button type="button" class="btn primary" data-act="start" data-i18n="nocam.cta">Check again</button>
+            <button type="button" class="btn ghost" data-goto="upload" data-i18n="idle.alt">Upload a photo</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-ended" hidden>
+        <div class="overlay-card">
+          <div class="state-icon warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/><path d="M6 10l5 5M11 10l-5 5"/></svg></div>
+          <h2 data-i18n="ended.title">The camera stopped</h2>
+          <p data-i18n="ended.body"></p>
+          <div class="actions"><button type="button" class="btn primary" data-act="start" data-i18n="idle.cta">Turn on camera</button></div>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-error" hidden>
+        <div class="overlay-card">
+          <div class="state-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+          <h2 data-i18n="error.title">Face detection stopped</h2>
+          <p data-i18n="error.body"></p>
+          <div class="actions">
+            <button type="button" class="btn primary" data-act="restart" data-i18n="error.cta">Restart detector</button>
+            <button type="button" class="btn danger-soft" data-act="stop" data-i18n="error.alt">Turn off camera</button>
+          </div>
+          <p class="fineprint" data-i18n="error.fine"></p>
+        </div>
+      </div>
+
+      <!-- Mobile controls float over the preview -->
+      <div class="mobile-dock" id="mobile-dock" hidden>
+        <span></span>
+        <button type="button" class="btn icon round danger-soft" data-act="stop" data-i18n-aria="ctrl.off" aria-label="Turn off camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 1l22 22M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/></svg></button>
+        <button type="button" class="btn icon right" data-act="flip" hidden data-i18n-aria="ctrl.flip" aria-label="Switch camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4-4.6 4.4A9 9 0 0 1 3.5 15"/></svg></button>
+      </div>
+    </div>
+
+    <div class="controlbar desktop">
+      <button type="button" class="btn primary" id="cam-toggle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg><span id="cam-toggle-label" data-i18n="ctrl.on">Turn on camera</span></button>
+      <button type="button" class="btn ghost" id="cam-mirror" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M4 7l4 5-4 5M20 7l-4 5 4 5"/></svg><span data-i18n="ctrl.mirror">Mirror</span></button>
+      <button type="button" class="btn ghost" data-act="flip" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4-4.6 4.4A9 9 0 0 1 3.5 15"/></svg><span data-i18n="ctrl.flip">Switch camera</span></button>
+      <span class="spacer"></span>
+      <span class="meta" id="cam-meta" data-i18n="ctrl.meta.off">Camera off</span>
+    </div>
 
     <p class="notice" role="note">
-      <strong>Avtomatik aniqlash barcha yuzlarni topishni kafolatlamaydi.</strong>
-      Yuklab olishdan oldin natijani tekshiring va kerak bo‘lsa qo‘lda hudud qo‘shing.
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+      <span><strong data-i18n="notice.strong">Automatic detection does not guarantee that every face is found.</strong> <span data-i18n="notice.camera">Side, small, distant or partly covered faces may be missed.</span></span>
     </p>
+  </section>
 
-    <section class="upload">
-      <label class="file-button">
-        <input id="file" type="file" accept="image/jpeg,image/png">
-        <span>Rasm tanlash</span>
-      </label>
-      <small>JPEG yoki PNG · 10 MB · 25 megapikselgacha</small>
-    </section>
+  <aside class="panel" data-i18n-aria="panel.label" aria-label="Settings">
+    <div class="seg" role="tablist" data-i18n-aria="mode.label" aria-label="Mode">
+      <button type="button" role="tab" data-mode="privacy" aria-selected="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span data-i18n="mode.privacy">Privacy</span></button>
+      <button type="button" role="tab" data-mode="effects" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.8H20l-4.9 3.6 1.9 5.8L12 14.6l-4.9 3.6 1.9-5.8L4 8.8h6.1z"/></svg><span data-i18n="mode.effects">Effects</span></button>
+      <button type="button" role="tab" data-mode="background" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg><span data-i18n="mode.background">Background</span></button>
+    </div>
 
-    <p id="status" class="status" aria-live="polite"></p>
-
-    <section id="workspace" class="workspace" hidden>
-      <div class="toolbar">
-        <span id="count" class="count"></span>
-        <label class="toggle">
-          <input id="toggle-boxes" type="checkbox" checked>
-          Bbox ko‘rsatish
-        </label>
-        <button id="draw-mode" type="button" aria-pressed="false">Qo‘lda hudud qo‘shish</button>
-        <a id="download" class="button primary" href="#" aria-disabled="true">Yuklab olish</a>
+    <div class="panel-body" id="p-privacy">
+      <div class="row">
+        <label for="t-blur"><span class="label" data-i18n="privacy.blur">Blur faces</span><span class="sub" data-i18n="privacy.blur.sub"></span></label>
+        <span class="switch"><input id="t-blur" type="checkbox" checked><span></span></span>
       </div>
-
-      <p id="draw-hint" class="hint" hidden>Yuz ustida barmoq yoki sichqoncha bilan to‘rtburchak chizing.</p>
-
-      <div id="stage" class="stage">
-        <img id="preview" alt="Xiralashtirilgan rasm preview">
-        <div id="overlay" class="overlay"></div>
+      <p class="warn-line" id="blur-off-warn" hidden data-i18n="privacy.blurOff"></p>
+      <div class="field">
+        <span class="label" data-i18n="privacy.method">Method</span>
+        <div class="pills" id="method-pills">
+          <button type="button" class="pill" data-method="pixel" aria-pressed="true" data-i18n="privacy.method.pixel">Pixelate + Gaussian</button>
+          <button type="button" class="pill" data-method="gauss" aria-pressed="false" data-i18n="privacy.method.gauss">Gaussian</button>
+          <button type="button" class="pill" data-method="block" aria-pressed="false" data-i18n="privacy.method.block">Solid block</button>
+        </div>
       </div>
+      <div class="field">
+        <div class="row"><label class="label" for="t-strength" data-i18n="privacy.strength">Strength</label><span class="meta" id="t-strength-value"></span></div>
+        <input id="t-strength" type="range" min="1" max="3" step="1" value="3">
+      </div>
+      <div class="row">
+        <label for="t-boxes"><span class="label" data-i18n="privacy.boxes">Show boxes</span><span class="sub" data-i18n="privacy.boxes.sub"></span></label>
+        <span class="switch"><input id="t-boxes" type="checkbox" checked><span></span></span>
+      </div>
+      <div class="row top">
+        <span><span class="label" data-i18n="privacy.hide">Hide frame when unsure</span><span class="sub" data-i18n="privacy.hide.sub"></span></span>
+        <span class="tag ok" data-i18n="privacy.hide.badge">Always on</span>
+      </div>
+      <div class="hr"></div>
+      <div class="row"><span class="label" data-i18n="privacy.detector">Detector</span><span class="tag" data-i18n="privacy.detector.value">MediaPipe · in browser</span></div>
+    </div>
 
-      <h2>Xiralashtiriladigan hududlar</h2>
-      <ul id="regions" class="regions"></ul>
-    </section>
-  </main>
+    <div class="panel-body" id="p-effects" hidden>
+      <div class="row"><h3 data-i18n="mode.effects">Effects</h3><span class="tag later" data-i18n="mode.later"></span></div>
+      <p class="fineprint" data-i18n="effects.soon"></p>
+    </div>
+
+    <div class="panel-body" id="p-background" hidden>
+      <div class="row"><h3 data-i18n="mode.background">Background</h3><span class="tag later" data-i18n="mode.later"></span></div>
+      <p class="fineprint" data-i18n="background.soon"></p>
+    </div>
+  </aside>
+</main>
+
+<!-- ============ PHOTO UPLOAD (existing flow) ============ -->
+<main id="view-upload" class="upload-view" role="tabpanel" aria-labelledby="tab-upload" hidden>
+  <input id="file" class="visually-hidden" type="file" accept="image/jpeg,image/png">
+
+  <div class="dropzone" id="up-empty">
+    <div class="state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></div>
+    <h2 data-i18n="upload.title">Choose a photo</h2>
+    <p data-i18n="upload.limits">JPEG or PNG · 10 MB · up to 25 megapixels</p>
+    <button type="button" class="btn primary" data-pick-file data-i18n="upload.cta">Choose file</button>
+  </div>
+
+  <div class="dropzone error" id="up-error" hidden>
+    <div class="state-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+    <h2 data-i18n="upload.error.title">This file can’t be processed</h2>
+    <p id="up-error-msg"></p>
+    <span class="code" id="up-error-code"></span>
+    <button type="button" class="btn primary" data-pick-file data-i18n="upload.cta.other">Choose another photo</button>
+  </div>
+
+  <p id="status" class="status-line" aria-live="polite"></p>
+
+  <section id="workspace" class="editor" hidden>
+    <div class="toolbar">
+      <span id="count" class="count"></span>
+      <label class="toggle"><span class="switch"><input id="toggle-boxes" type="checkbox" checked><span></span></span><span data-i18n="upload.boxes">Show boxes</span></label>
+      <button type="button" class="btn" id="draw-mode" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/><path d="M12 8v8M8 12h8"/></svg><span data-i18n="upload.add">Add region</span></button>
+      <button type="button" class="btn ghost" data-pick-file data-i18n="upload.cta.other">Choose another photo</button>
+      <a id="download" class="btn primary" href="#" aria-disabled="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg><span data-i18n="upload.download">Download</span></a>
+    </div>
+    <p id="draw-hint" class="hint" hidden data-i18n="upload.hint"></p>
+    <div id="stage" class="photo">
+      <img id="preview" alt="Blurred image preview" data-i18n-alt="upload.previewAlt">
+      <div id="overlay" class="photo-overlay"></div>
+    </div>
+    <h3 data-i18n="upload.regions">Regions to blur</h3>
+    <ul id="regions" class="regions"></ul>
+  </section>
+
+  <p class="notice" role="note">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+    <span><strong data-i18n="notice.strong">Automatic detection does not guarantee that every face is found.</strong> <span data-i18n="notice.upload">Review the result before downloading and add manual regions where needed.</span></span>
+  </p>
+</main>
 </body>
 </html>
