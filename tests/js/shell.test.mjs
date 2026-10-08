@@ -450,3 +450,30 @@ test("[bg] pagehide discards a decode in flight and closes the current image", a
   assert.equal(late.closed, true, "late decode discarded");
   assert.equal(h.context.liveCamera.background.hasImage, false);
 });
+
+// ---------- Codex review of 3-batch: runtime mask error -> status + working Retry ----------
+
+test("[d2] a runtime mask error shows the background error with Retry; Retry recreates the segmenter", async () => {
+  const h = loadShell({ realCamera: true });
+  const camera = h.context.liveCamera;
+  camera.setSettings({ background: "blur" });
+  const worker = await goLiveInShell(h);
+  worker.onmessage({ data: { type: "segmenter-ready", initMs: 1 } });
+  let msg = await nextFrame(h, worker);
+  assert.equal(msg.segment, true);
+  worker.onmessage({ data: { type: "result", session: msg.session, frameId: msg.frameId, faces: FACES, mask: null, maskError: "graph failed" } });
+
+  assert.equal(camera.state, "hidden");
+  assert.equal(camera.canSnapshot(), false);
+  assert.equal(h.el("#ov-hidden").hidden, false);
+  assert.equal(h.el("#bg-status").hidden, false);
+  assert.equal(h.el("#bg-status-text").textContent, EN("bg.error"));
+  assert.equal(h.el("#bg-retry").hidden, false, "Retry is offered");
+  h.context.i18n.setLang("ko");
+  assert.equal(h.el("#bg-status-text").textContent.startsWith("배경 분리를 사용할 수 없습니다"), true);
+
+  h.el("#bg-retry").listeners.click.forEach((fn) => fn());
+  const retry = worker.posted.filter((m) => m.type === "init-segmenter").at(-1);
+  assert.equal(retry.recreate, true);
+  assert.equal(h.el("#bg-retry").hidden, true, "loading while it is rebuilt");
+});

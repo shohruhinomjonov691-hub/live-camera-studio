@@ -1115,9 +1115,10 @@ test("[bg] segmenter error: hidden at once, snapshot blocked; Retry or backgroun
 test("[bg] an invalid or missing mask hides that frame", async () => {
   const h = setup();
   await liveWithBackground(h);
-  for (const bad of [null, fullMask(640, 240), { width: 640, height: 480, alpha: new Uint8ClampedArray(10) }, { width: 0, height: 0, alpha: new Uint8ClampedArray(0) }]) {
+  // Malformed masks that slipped through (a runtime maskError is a separate, sticky error: see below).
+  for (const bad of [fullMask(640, 240), { width: 640, height: 480, alpha: new Uint8ClampedArray(10) }, { width: 0, height: 0, alpha: new Uint8ClampedArray(0) }]) {
     await h.runFrame();
-    replyBg(h, h.lastDetect(), { mask: bad, maskError: bad ? null : "no person mask" });
+    replyBg(h, h.lastDetect(), { mask: bad });
     assert.equal(h.state(), "hidden", JSON.stringify(bad && [bad.width, bad.height]));
     assert.ok(cleared(h.env.view));
   }
@@ -1259,4 +1260,115 @@ test("[bg] a mask is used only if it was asked for that very frame", async () =>
   replyBg(h, early); // even if a mask comes back with it
   assert.equal(h.state(), "hidden");
   assert.equal(viewDraws(h.env.view).length, 0);
+});
+
+// ---------- Codex review of 3-batch ----------
+
+test("[d1] background ON + blur OFF: a timeout wipes the canvas, blocks snapshots, drops the late result", async () => {
+  for (const setup1 of [{ blurOn: false }, { glasses: true }]) {
+    const h = setup();
+    h.camera.setSettings(setup1);
+    await liveWithBackground(h);
+    if (setup1.glasses) h.worker.reply({ type: "landmarker-ready", initMs: 1 });
+    await bgFrame(h);
+    assert.equal(h.state(), "live");
+    assert.equal(h.camera.settings.blurOn, false);
+    await h.runFrame();
+    const stale = h.lastDetect();
+    h.fireTimers(1000);
+    assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "timeout" }], JSON.stringify(setup1));
+    assert.ok(cleared(h.env.view) && cleared(h.env.overlay) && cleared(h.buffer()));
+    assert.equal(h.camera.canSnapshot(), false);
+    const draws = viewDraws(h.env.view).length;
+    replyBg(h, stale);
+    assert.equal(viewDraws(h.env.view).length, draws, "late result dropped");
+    await bgFrame(h);
+    assert.equal(h.state(), "live", "recovers with a new frame");
+  }
+});
+
+test("[d1] control: no background and blur OFF — a timeout keeps the last frame (nothing to hide)", async () => {
+  const h = setup();
+  h.camera.setSettings({ blurOn: false });
+  await goLive(h);
+  await showFrame(h, FACE);
+  await h.runFrame();
+  h.fireTimers(1000);
+  assert.equal(h.state(), "live");
+});
+
+test("[d2] a runtime mask error of the current frame puts the segmenter in error: hidden, no snapshot, Retry", async () => {
+  const h = setup();
+  const statuses = [];
+  h.env.onBackground = (status) => statuses.push(status);
+  await liveWithBackground(h);
+  await bgFrame(h);
+  await h.runFrame();
+  replyBg(h, h.lastDetect(), { mask: null, maskError: "graph failed" });
+  assert.equal(h.camera.background.segmenter, "error");
+  assert.equal(statuses.at(-1), "error", "the shell is told (status + Retry)");
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "bgError" }]);
+  assert.ok(cleared(h.env.view));
+  assert.equal(h.camera.canSnapshot(), false);
+  await h.runFrame();
+  const meanwhile = h.lastDetect();
+  assert.equal(meanwhile.segment, false, "no masks asked from the broken segmenter");
+  replyBg(h, meanwhile, { mask: null });
+  assert.equal(h.state(), "hidden");
+
+  // Retry recreates the segmenter in the worker.
+  h.camera.retryBackground();
+  const retry = h.worker.posted.filter((m) => m.type === "init-segmenter").at(-1);
+  assert.deepEqual(plain(retry), { type: "init-segmenter", recreate: true });
+  assert.equal(h.camera.background.segmenter, "loading");
+  h.worker.reply({ type: "segmenter-ready", initMs: 1 });
+  await bgFrame(h);
+  assert.equal(h.state(), "live", "retry success recovers");
+});
+
+test("[d2] Retry failure keeps the preview hidden and Retry available", async () => {
+  const h = setup();
+  await liveWithBackground(h);
+  await h.runFrame();
+  replyBg(h, h.lastDetect(), { mask: null, maskError: "graph failed" });
+  h.camera.retryBackground();
+  h.worker.reply({ type: "segmenter-error", message: "still broken" });
+  assert.equal(h.camera.background.segmenter, "error");
+  assert.equal(h.state(), "hidden");
+  await h.runFrame();
+  replyBg(h, h.lastDetect(), { mask: null });
+  assert.equal(h.state(), "hidden", "the real background is not shown");
+  h.camera.retryBackground();
+  assert.equal(h.worker.posted.filter((m) => m.type === "init-segmenter" && m.recreate).length, 2, "can retry again");
+});
+
+test("[d2] background OFF recovers after a runtime mask error", async () => {
+  const h = setup();
+  await liveWithBackground(h);
+  await h.runFrame();
+  replyBg(h, h.lastDetect(), { mask: null, maskError: "graph failed" });
+  h.camera.setSettings({ background: "off" });
+  await showFrame(h, FACE);
+  assert.equal(h.state(), "live");
+});
+
+test("[d2] a stale mask error (timed-out frame or old mode) changes nothing", async () => {
+  const h = setup();
+  await liveWithBackground(h);
+  await bgFrame(h);
+  await h.runFrame();
+  const timedOut = h.lastDetect();
+  h.fireTimers(1000);
+  replyBg(h, timedOut, { mask: null, maskError: "late failure" });
+  assert.equal(h.camera.background.segmenter, "ready", "stale error ignored");
+  await bgFrame(h);
+  assert.equal(h.state(), "live");
+
+  await h.runFrame();
+  const oldMode = h.lastDetect();
+  h.camera.setSettings({ bgBlur: 3 }); // the frame in flight belongs to the old settings
+  replyBg(h, oldMode, { mask: null, maskError: "late failure" });
+  assert.equal(h.camera.background.segmenter, "ready");
+  await bgFrame(h);
+  assert.equal(h.state(), "live");
 });

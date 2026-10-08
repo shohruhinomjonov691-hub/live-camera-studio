@@ -20,6 +20,7 @@ function loadWorker({ failLandmarker = false, maskValues = null } = {}) {
   };
 
   // Like the bundle: wait for the loader, require self.ModuleFactory, consume it and clear it.
+  const closed = [];
   const task = (kind) => ({
     async createFromOptions() {
       await tick();
@@ -29,6 +30,9 @@ function loadWorker({ failLandmarker = false, maskValues = null } = {}) {
       await tick();
       created.push(kind);
       return {
+        close() {
+          closed.push(kind);
+        },
         detectForVideo() {
           if (kind === "segmenter") throw new Error("segmenter has no detectForVideo");
           if (kind === "detector") {
@@ -57,7 +61,7 @@ function loadWorker({ failLandmarker = false, maskValues = null } = {}) {
   vm.createContext(context);
   vm.runInContext(code, context);
   const send = (data) => context.onmessage({ data });
-  return { posted, created, send, context };
+  return { posted, created, closed, send, context };
 }
 
 async function settle() {
@@ -154,4 +158,31 @@ test("[bg] segmentation before the segmenter is ready reports 'not ready'", asyn
   const bitmap = { width: 2, height: 2, closed: false, close() { this.closed = true; } };
   w.send({ type: "detect", session: 1, frameId: 1, bitmap, timestamp: 1, segment: true });
   assert.equal(w.posted.find((m) => m.type === "result").maskError, "not ready");
+});
+
+test("[d2] Retry (recreate) closes the broken segmenter and builds a new one through the queue", async () => {
+  const w = loadWorker();
+  w.send({ type: "init" });
+  w.send({ type: "init-segmenter" });
+  await settle();
+  w.send({ type: "init-segmenter", recreate: true });
+  // While it is rebuilt, detections report the segmenter as not ready.
+  const bitmap = { width: 2, height: 2, closed: false, close() { this.closed = true; } };
+  w.send({ type: "detect", session: 1, frameId: 1, bitmap, timestamp: 1, segment: true });
+  assert.equal(w.posted.find((m) => m.type === "result").maskError, "not ready");
+  await settle();
+  assert.deepEqual(w.closed, ["segmenter"], "broken instance released");
+  assert.deepEqual(w.created, ["detector", "segmenter", "segmenter"]);
+  assert.equal(w.posted.filter((m) => m.type === "segmenter-ready").length, 2);
+});
+
+test("[d2] init-segmenter without recreate keeps a working instance", async () => {
+  const w = loadWorker();
+  w.send({ type: "init" });
+  w.send({ type: "init-segmenter" });
+  await settle();
+  w.send({ type: "init-segmenter" });
+  await settle();
+  assert.deepEqual(w.closed, []);
+  assert.deepEqual(w.created, ["detector", "segmenter"]);
 });

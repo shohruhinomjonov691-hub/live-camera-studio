@@ -3,7 +3,8 @@
 //
 // in:  {type: "init"}                       load the face detector (needed for blur)
 //      {type: "init-landmarker"}            load the face landmarker (only for the glasses effect)
-//      {type: "init-segmenter"}             load the selfie segmenter (only for background effects)
+//      {type: "init-segmenter", recreate?}  load the selfie segmenter (only for background effects);
+//                                           recreate: close the current instance first (Retry after an error)
 //      {type: "detect", session, frameId, bitmap, timestamp, landmarks: bool, segment: bool}
 // out: {type: "ready", initMs}
 //      {type: "landmarker-ready", initMs} | {type: "landmarker-error", message}
@@ -218,6 +219,16 @@ self.onmessage = async (event) => {
       self.postMessage({ type: "landmarker-error", message: String(error?.message || error) });
     }
   } else if (msg.type === "init-segmenter") {
+    if (msg.recreate && segmenter) {
+      // Retry after a runtime failure: release the broken instance; detections meanwhile report "not ready".
+      const broken = segmenter;
+      segmenter = null;
+      try {
+        broken.close();
+      } catch (_) {
+        /* already unusable */
+      }
+    }
     try {
       const initMs = segmenter ? 0 : await initSegmenter();
       self.postMessage({ type: "segmenter-ready", initMs });

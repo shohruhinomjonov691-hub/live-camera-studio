@@ -268,10 +268,11 @@
     }
 
     /** Load the segmenter in the worker (once, or again after an error). */
-    function requestSegmenter() {
+    function requestSegmenter({ recreate = false } = {}) {
       if (!worker || segmenter === "loading" || segmenter === "ready") return;
       setSegmenter("loading");
-      worker.postMessage({ type: "init-segmenter" });
+      // After an error the worker must drop the broken instance and build a new one.
+      worker.postMessage({ type: "init-segmenter", recreate });
     }
 
     /** With a background on, a frame that cannot be cut out is hidden, never shown with its real background. */
@@ -517,7 +518,8 @@
     function onDeadline(current) {
       if (job !== current) return;
       dropJob(); // this frame is now stale: its result will be ignored when it arrives
-      if (settings.blurOn) {
+      // Fail closed whenever something must be hidden: faces (blur) or the real background (background on).
+      if (settings.blurOn || settings.background !== "off") {
         clearView();
         setState("hidden", { why: "timeout" });
       }
@@ -537,6 +539,9 @@
       // Landmarks of this very frame, only if the effect is still on.
       const eyes = current.landmarks && settings.glasses && Array.isArray(msg.eyes) ? msg.eyes : [];
       try {
+        // A runtime segmentation failure for this very frame (session and frameId already matched above):
+        // the segmenter is now in error; the frame is hidden below and Retry recreates the segmenter.
+        if (settings.background !== "off" && current.segment && msg.maskError) setSegmenter("error", msg.maskError);
         // Mask of this very frame, only if a background is still on and it was asked for this frame.
         const mask = settings.background !== "off" && current.segment && validMask(msg.mask, current.frame) ? msg.mask : null;
         if (settings.blurOn && faces.length === 0) {
@@ -798,7 +803,7 @@
       setBackgroundImage,
       /** Retry loading the segmenter after an error. */
       retryBackground() {
-        if (segmenter === "error") requestSegmenter();
+        if (segmenter === "error") requestSegmenter({ recreate: true });
       },
       /** Release the background image (page is going away). */
       dispose() {
