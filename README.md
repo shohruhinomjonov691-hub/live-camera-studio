@@ -98,7 +98,7 @@ node --test tests/js/*.test.mjs
 ```
 
 - Python: invalid/corrupt files, size and pixel limits, EXIF orientation, alpha flattening, region parsing and bounds, error codes, security headers (CSP, `Permissions-Policy`, worker CSP, no inline script/style), vendored files served, blur confined to regions, metadata stripping, and that a >1 MB upload opens no file for writing and adds nothing to the temp or project directories.
-- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use, glasses layer order and failures, snapshot source/mirror/disabled states, bitmap cleanup), and EN/KO coverage plus the saved language choice.
+- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use, glasses layer order and failures, snapshot source/mirror/disabled states, bitmap cleanup, messages from a replaced worker), the detector worker with fake MediaPipe tasks (detector and landmarker created one at a time), the snapshot/pagehide flow of the page shell, and EN/KO coverage plus the saved language choice.
 
 These tests use synthetic images and fakes. **They do not measure face-detection quality.**
 
