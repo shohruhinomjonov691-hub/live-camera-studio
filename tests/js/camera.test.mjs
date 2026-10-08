@@ -19,7 +19,10 @@ function fakeCanvas(name) {
     {
       get(target, key) {
         if (key in target) return target[key];
-        return (...args) => canvas.ops.push([key, ...args]);
+        return (...args) => {
+          if (canvas.throwOn === key) throw new Error(`${key} failed`);
+          canvas.ops.push([key, ...args]);
+        };
       },
       set(target, key, value) {
         target[key] = value;
@@ -48,7 +51,9 @@ function fakeStream() {
   return { track, getTracks: () => [track], getVideoTracks: () => [track] };
 }
 
-function setup({ secure = true } = {}) {
+function setup({ secure = true, deferBitmaps = false } = {}) {
+  const made = [];
+  const bitmapRequests = [];
   const timers = [];
   const frames = [];
   const captured = [];
@@ -65,15 +70,20 @@ function setup({ secure = true } = {}) {
     video: { srcObject: null, readyState: 4, paused: true, play: async function () { this.paused = false; }, pause() { this.paused = true; } },
     view: fakeCanvas("view"),
     overlay: fakeCanvas("overlay"),
-    makeCanvas: () => fakeCanvas("offscreen"),
+    makeCanvas: () => {
+      const canvas = fakeCanvas("offscreen");
+      made.push(canvas);
+      return canvas;
+    },
     isSecureContext: secure,
     mediaDevices: { getUserMedia: () => new Promise((resolve, reject) => (gum = { resolve, reject })) },
     createWorker: () => worker,
-    createImageBitmap: async (source) => {
+    createImageBitmap: (source) => {
       const bitmap = fakeBitmap(source === env.video ? "frame" : `copy-of-${source.id}`);
       if (source === env.video) captured.push(bitmap);
       else bitmap.copyOf = source;
-      return bitmap;
+      if (!deferBitmaps) return Promise.resolve(bitmap);
+      return new Promise((resolve) => bitmapRequests.push({ source, bitmap, resolve: () => resolve(bitmap) }));
     },
     requestFrame: (fn) => frames.push(fn) - 1,
     cancelFrame: (id) => (frames[id] = null),
@@ -94,7 +104,9 @@ function setup({ secure = true } = {}) {
   const camera = context.createCameraController(env);
 
   return {
-    camera, env, worker, captured, states, timers,
+    camera, env, worker, captured, states, timers, bitmapRequests,
+    buffer: () => made[0],
+    detects: () => worker.posted.filter((m) => m.type === "detect"),
     gum: () => gum,
     state: () => camera.state,
     async runFrame() {
@@ -336,4 +348,186 @@ test("face boxes are padded by 25% and clipped to the frame", () => {
   assert.deepEqual(plain(box({ x: 100, y: 100, w: 100, h: 100 }, 640, 480)), { x: 75, y: 75, w: 150, h: 150 });
   assert.deepEqual(plain(box({ x: -10, y: 400, w: 100, h: 100 }, 640, 480)), { x: 0, y: 375, w: 115, h: 105 });
   assert.equal(box({ x: 700, y: 10, w: 10, h: 10 }, 640, 480), null);
+});
+
+// ---------- Codex review (2026-10-08) regressions ----------
+
+async function showFrame(h, faces = [{ x: 100, y: 100, w: 80, h: 80 }]) {
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces, inferMs: 5 });
+  return msg;
+}
+const cleared = (canvas) => canvas.ops.at(-1)[0] === "clearRect";
+
+test("[1] turning blur back on wipes view, overlay and buffer at once", async () => {
+  const h = setup();
+  h.camera.setSettings({ blurOn: false });
+  await goLive(h);
+  await showFrame(h, []); // an unblurred frame is on screen (allowed while blur is off)
+  assert.equal(h.state(), "live");
+
+  h.camera.setSettings({ blurOn: true });
+  assert.ok(cleared(h.env.view) && cleared(h.env.overlay) && cleared(h.buffer()));
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "pending" }]);
+});
+
+test("[1] a frame captured while blur was off is never shown after blur is turned on", async () => {
+  const h = setup();
+  h.camera.setSettings({ blurOn: false });
+  await goLive(h);
+  await showFrame(h, []);
+  await h.runFrame(); // frame captured with blur off, result pending
+  const pending = h.lastDetect();
+  const frame = h.captured.at(-1);
+
+  h.camera.setSettings({ blurOn: true });
+  const draws = viewDraws(h.env.view).length;
+  h.worker.reply({ type: "result", session: pending.session, frameId: pending.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
+  assert.equal(viewDraws(h.env.view).length, draws, "result of the off-frame is ignored");
+  assert.equal(frame.closed, true);
+
+  // Only a frame captured and processed with blur on reopens the preview.
+  await showFrame(h);
+  assert.equal(h.state(), "live");
+  assert.ok(h.buffer().ops.some((op) => op[0] === "clip"), "the new frame was blurred");
+});
+
+test("[1] a timeout that fired while blur was off cannot leave a raw frame up after turning blur on", async () => {
+  const h = setup();
+  h.camera.setSettings({ blurOn: false });
+  await goLive(h);
+  await showFrame(h, []);
+  await h.runFrame();
+  h.fireTimers(1000); // deadline while blur off: frame dropped, view untouched (allowed)
+  h.camera.setSettings({ blurOn: true });
+  assert.ok(cleared(h.env.view));
+  assert.equal(h.state(), "hidden");
+  assert.ok(h.pendingFrames() >= 1, "the pipeline continues with a new frame");
+});
+
+test("[2] the late result of a timed-out frame is dropped; the next new frame recovers", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const stale = h.lastDetect();
+  const staleFrame = h.captured.at(-1);
+  h.fireTimers(1000);
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "timeout" }]);
+  assert.equal(staleFrame.closed, true);
+
+  h.worker.reply({ type: "result", session: stale.session, frameId: stale.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
+  assert.equal(h.state(), "hidden", "a result older than the deadline must not reopen the preview");
+  assert.equal(viewDraws(h.env.view).length, 0);
+
+  await showFrame(h); // pipeline is not stuck busy
+  assert.equal(h.detects().length, 2);
+  assert.equal(h.state(), "live");
+});
+
+test("[3] the deadline counts from capture start: a stuck capture hides the preview", async () => {
+  const h = setup({ deferBitmaps: true });
+  await goLive(h);
+  await h.runFrame(); // createImageBitmap(video) never resolves
+  assert.equal(h.bitmapRequests.length, 1);
+  h.fireTimers(1000);
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "timeout" }]);
+  assert.ok(cleared(h.env.view));
+
+  h.bitmapRequests[0].resolve(); // returns after the deadline
+  await flush();
+  assert.equal(h.bitmapRequests[0].bitmap.closed, true, "late bitmap is closed");
+  assert.equal(h.bitmapRequests.length, 1, "no copy is started for a timed-out frame");
+  assert.equal(h.detects().length, 0);
+  assert.ok(h.pendingFrames() >= 1, "a new frame is scheduled");
+});
+
+test("[3] Stop before the first bitmap returns: it is closed and no copy is started", async () => {
+  const h = setup({ deferBitmaps: true });
+  await goLive(h);
+  await h.runFrame();
+  h.camera.stop();
+  h.bitmapRequests[0].resolve();
+  await flush();
+  assert.equal(h.bitmapRequests[0].bitmap.closed, true);
+  assert.equal(h.bitmapRequests.length, 1);
+  assert.equal(h.detects().length, 0);
+});
+
+test("[3] Stop while the copy is pending: both bitmaps are closed, nothing is sent", async () => {
+  const h = setup({ deferBitmaps: true });
+  await goLive(h);
+  await h.runFrame();
+  h.bitmapRequests[0].resolve();
+  await flush(); // now waiting for the copy
+  assert.equal(h.bitmapRequests.length, 2);
+  h.camera.stop();
+  assert.equal(h.bitmapRequests[0].bitmap.closed, true, "frame closed by Stop");
+  h.bitmapRequests[1].resolve();
+  await flush();
+  assert.equal(h.bitmapRequests[1].bitmap.closed, true, "late copy closed");
+  assert.equal(h.detects().length, 0);
+});
+
+test("[4] a compose error closes the frame and fails closed", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  const frame = h.captured.at(-1);
+  h.env.view.throwOn = "drawImage";
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
+  assert.equal(frame.closed, true);
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "render" }]);
+  assert.ok(cleared(h.env.view) && cleared(h.env.overlay) && cleared(h.buffer()));
+  assert.equal(h.pendingFrames(), 0);
+  h.env.view.throwOn = null;
+  h.camera.stop(); // and Stop afterwards is clean
+  assert.ok(h.captured.every((b) => b.closed));
+});
+
+test("[5] small boxes are really reduced, so no original pixel survives without canvas filters", () => {
+  const context = { console };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(CAMERA_JS, context);
+  const { obscure } = context.liveCameraInternals;
+  for (const method of ["pixel", "gauss"]) {
+    for (const strength of [1, 2, 3]) {
+      for (const size of [6, 10, 24]) {
+        const target = fakeCanvas("frame");
+        const scratch = fakeCanvas("scratch");
+        obscure(target.getContext("2d"), scratch, { x: 5, y: 5, w: size, h: size }, method, strength);
+        assert.ok(scratch.width * 3 <= size, `${method}/${strength}/${size}: scratch ${scratch.width}px is not a reduction`);
+        // Everything painted back into the box comes from the reduced copy, never the original canvas.
+        const paints = target.ops.filter((op) => op[0] === "drawImage");
+        assert.ok(paints.length > 0 && paints.every((op) => op[1] === scratch));
+      }
+    }
+  }
+});
+
+test("onResult ignores a result whose frame id matches but whose session is old", async () => {
+  const h = setup();
+  await goLive(h);
+  const oldSession = (await (async () => { await h.runFrame(); return h.lastDetect().session; })());
+  h.camera.stop();
+  await goLive(h);
+  await h.runFrame();
+  const current = h.lastDetect();
+  assert.notEqual(current.session, oldSession);
+  h.worker.reply({ type: "result", session: oldSession, frameId: current.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
+  assert.equal(viewDraws(h.env.view).length, 0, "same frame id, old session: ignored");
+  h.worker.reply({ type: "result", session: current.session, frameId: current.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
+  assert.equal(viewDraws(h.env.view).length, 1);
+});
+
+test("after Stop and restart the pipeline is not left busy", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  h.camera.stop();
+  await goLive(h);
+  await showFrame(h);
+  assert.equal(h.state(), "live");
 });

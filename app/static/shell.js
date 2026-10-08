@@ -64,7 +64,8 @@
     const streaming = STREAMING.includes(state);
     OVERLAYS.forEach((name) => ($(`#ov-${name}`).hidden = state !== name));
     $("#idle-paused").hidden = !(state === "idle" && info.reason === "hidden");
-    $("#hidden-why").textContent = t(info.why === "timeout" ? "hidden.timeout" : "hidden.noface");
+    const why = { timeout: "hidden.timeout", pending: "hidden.pending" }[info.why] || "hidden.noface";
+    $("#hidden-why").textContent = t(why);
 
     $("#hud").hidden = !streaming;
     $("#mobile-dock").hidden = !streaming;

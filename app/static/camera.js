@@ -20,6 +20,9 @@
   const PADDING = 0.25;
   const CELLS = { 1: 16, 2: 11, 3: 7 }; // pixel cells across the shorter side of a face box
   const BLUR_DIVISOR = { 1: 12, 2: 8, 3: 5 }; // Gaussian radius = shorter side / divisor
+  // Every scratch cell covers at least MIN_CELL×MIN_CELL source pixels, so even a tiny box is really reduced
+  // and no original pixel survives when canvas filters are unavailable.
+  const MIN_CELL = 4;
 
   /** Pad a detector box by PADDING on each side and clip it to the frame. */
   function boxFor(face, width, height) {
@@ -42,7 +45,7 @@
       return;
     }
     const cells = method === "gauss" ? CELLS[strength] * 2 : CELLS[strength];
-    const cell = Math.max(1, Math.min(w, h) / cells);
+    const cell = Math.max(MIN_CELL, Math.min(w, h) / cells);
     const sw = Math.max(1, Math.round(w / cell));
     const sh = Math.max(1, Math.round(h / cell));
     scratch.width = sw;
@@ -106,10 +109,10 @@
     let detectorUp = false;
     let pendingInit = null;
     let frameId = 0;
-    let busy = false; // a frame is being captured or detected
-    let inFlight = null; // {frameId, frame, capturedAt}
+    // The one frame in the pipeline, from the start of capture until its result is drawn or dropped:
+    // {id, session, frame, copy, capturedAt, timer}. A new frame is captured only when this is null.
+    let job = null;
     let frameHandle = null;
-    let pendingTimer = null;
     let state = "idle";
     let stateInfo = null;
     const buffer = env.makeCanvas();
@@ -133,12 +136,13 @@
       clearCanvas(buffer);
     }
 
-    function releaseInFlight() {
-      if (inFlight) inFlight.frame.close();
-      inFlight = null;
-      busy = false;
-      env.clearTimeout(pendingTimer);
-      pendingTimer = null;
+    /** Drop the frame in the pipeline: cancel its deadline and close its bitmaps. Its late result is ignored. */
+    function dropJob() {
+      if (!job) return;
+      env.clearTimeout(job.timer);
+      if (job.frame) job.frame.close();
+      if (job.copy) job.copy.close(); // null once transferred to the worker
+      job = null;
     }
 
     // ---------- detector worker ----------
@@ -248,7 +252,7 @@
       camSession++;
       if (frameHandle !== null) env.cancelFrame(frameHandle);
       frameHandle = null;
-      releaseInFlight();
+      dropJob();
       if (stream) stopTracks(stream);
       stream = null;
       if (env.video.pause) env.video.pause();
@@ -263,7 +267,7 @@
     function fail(kind) {
       if (frameHandle !== null) env.cancelFrame(frameHandle);
       frameHandle = null;
-      releaseInFlight();
+      dropJob();
       clearView();
       setState("error", { kind });
     }
@@ -291,66 +295,81 @@
 
     function tick() {
       frameHandle = null;
-      if (!stream || busy || !detectorUp || state === "error") return;
+      if (!stream || job || !detectorUp || state === "error") return;
       if (env.video.readyState < 2) {
         schedule();
         return;
       }
-      capture(camSession);
+      capture();
     }
 
-    async function capture(id) {
-      busy = true;
-      let frame;
-      let copy;
+    async function capture() {
+      // The deadline runs from the start of capture, so a stuck createImageBitmap also hides the preview.
+      const current = { id: ++frameId, session: camSession, frame: null, copy: null, capturedAt: env.now(), timer: null };
+      job = current;
+      current.timer = env.setTimeout(() => onDeadline(current), PENDING_TIMEOUT_MS);
+      // After every await: is this still the frame in the pipeline (no Stop, timeout or newer frame)?
+      const live = () => job === current && current.session === camSession;
       try {
-        frame = await env.createImageBitmap(env.video);
-        copy = await env.createImageBitmap(frame); // same pixels: one for the detector, one to blur
+        const frame = await env.createImageBitmap(env.video);
+        if (!live()) {
+          frame.close();
+          return;
+        }
+        current.frame = frame;
+        const copy = await env.createImageBitmap(frame); // same pixels: one for the detector, one to blur
+        if (!live()) {
+          copy.close(); // current.frame was already closed by dropJob()
+          return;
+        }
+        current.copy = copy;
       } catch (error) {
-        if (frame) frame.close();
-        if (id === camSession) {
-          busy = false;
+        if (live()) {
+          dropJob();
           schedule();
         }
         return;
       }
-      if (id !== camSession) {
-        frame.close();
-        copy.close();
-        return;
-      }
-      const fid = ++frameId;
-      inFlight = { frameId: fid, frame, capturedAt: env.now() };
-      pendingTimer = env.setTimeout(() => onPendingTimeout(id, fid), PENDING_TIMEOUT_MS);
-      worker.postMessage({ type: "detect", session: id, frameId: fid, bitmap: copy, timestamp: env.now() }, [copy]);
+      worker.postMessage(
+        { type: "detect", session: current.session, frameId: current.id, bitmap: current.copy, timestamp: env.now() },
+        [current.copy],
+      );
+      current.copy = null; // transferred: the worker closes it
     }
 
-    function onPendingTimeout(id, fid) {
-      if (id !== camSession || !inFlight || inFlight.frameId !== fid || !settings.blurOn) return;
-      clearView();
-      setState("hidden", { why: "timeout" });
+    function onDeadline(current) {
+      if (job !== current) return;
+      dropJob(); // this frame is now stale: its result will be ignored when it arrives
+      if (settings.blurOn) {
+        clearView();
+        setState("hidden", { why: "timeout" });
+      }
+      schedule(); // recover with the next new frame
     }
 
     function onResult(msg) {
-      // Results of an older session or frame are dropped; their bitmaps were released by stop().
-      if (msg.session !== camSession || !inFlight || msg.frameId !== inFlight.frameId) return;
-      const { frame, capturedAt } = inFlight;
-      inFlight = null;
-      busy = false;
-      env.clearTimeout(pendingTimer);
-      pendingTimer = null;
+      // Only the result for the frame in the pipeline, in the current session, is used.
+      if (msg.session !== camSession || !job || msg.frameId !== job.id) return;
+      const current = job;
+      job = null;
+      env.clearTimeout(current.timer);
 
       const faces = msg.faces || [];
-      if (settings.blurOn && faces.length === 0) {
-        frame.close();
-        clearView();
-        setState("hidden", { why: "noface" });
-      } else {
-        compose(frame, faces);
-        frame.close();
-        setState("live", { faces: faces.length, blurOn: settings.blurOn });
+      try {
+        if (settings.blurOn && faces.length === 0) {
+          clearView();
+          setState("hidden", { why: "noface" });
+        } else {
+          compose(current.frame, faces);
+          setState("live", { faces: faces.length, blurOn: settings.blurOn });
+        }
+      } catch (error) {
+        fail("render"); // clears the canvas; nothing half-drawn stays visible
+        return;
+      } finally {
+        current.frame.close();
       }
-      record(msg.inferMs, env.now() - capturedAt);
+      record(msg.inferMs, env.now() - current.capturedAt);
       schedule();
     }
 
@@ -422,7 +441,18 @@
         }
       },
       setSettings(partial) {
+        const blurTurnedOn = partial.blurOn === true && !settings.blurOn;
         Object.assign(settings, partial);
+        if (blurTurnedOn) {
+          // Nothing captured or drawn while blur was off may stay visible: wipe it and show only frames
+          // that are captured and processed with blur on.
+          dropJob();
+          clearView();
+          if (state === "live" || state === "hidden") {
+            setState("hidden", { why: "pending" });
+            schedule();
+          }
+        }
       },
       get settings() {
         return { ...settings };
