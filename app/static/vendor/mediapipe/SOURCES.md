@@ -55,6 +55,22 @@ Browsers without WebAssembly SIMD therefore cannot run the live detector; the ca
 - Model card note: predicted landmarks do not provide facial recognition or identification.
 - Loaded only when the user turns the glasses effect on.
 
+## Selfie Segmenter model (background effects)
+
+- File: `models/selfie_segmenter.tflite` (general, 256×256 input), 249,537 bytes
+- SHA-256: `191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b`
+- Source: `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite`
+  (identical to `.../float16/latest/...` on 2026-10-08), linked from
+  `https://developers.google.com/edge/mediapipe/solutions/vision/image_segmenter`.
+- License: **Apache License, Version 2.0** — "LICENSED UNDER" in the official model card "MediaPipe Selfie
+  Segmentation", dated May 6, 2021:
+  `https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Selfie%20Segmentation.pdf`
+  (PDF SHA-256 `ef2e8d350891ba71699ac1e079658e697fc8d48c0f9253922990e907ecdade60`).
+- The general (square) model was chosen over the 144×256 landscape variant because phone cameras also
+  produce portrait frames. Model card limits: multiple people at different scales and people far from the
+  camera are out of scope.
+- Loaded only when the user turns a background on.
+
 ## `LICENSE`
 
 - Source: `https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/LICENSE`
@@ -63,5 +79,5 @@ Browsers without WebAssembly SIMD therefore cannot run the live detector; the ca
 
 ## Not included
 
-The Selfie Segmenter model (background effects) is planned for a later batch and is not vendored. Its license must
-be confirmed from its model card before it is added.
+Other MediaPipe models (landscape selfie segmenter, hair/multiclass segmenters, full-range face detectors) are
+not vendored.
