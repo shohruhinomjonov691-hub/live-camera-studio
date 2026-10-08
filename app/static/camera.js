@@ -207,12 +207,14 @@
     // ---------- detector worker ----------
     function ensureWorker() {
       if (workerReady) return workerReady;
-      worker = env.createWorker();
+      const created = env.createWorker();
+      worker = created;
       workerReady = new Promise((resolve, reject) => (pendingInit = { resolve, reject }));
       workerReady.catch(() => {}); // handled by whoever awaits it
-      worker.onmessage = (event) => onWorkerMessage(event.data);
-      worker.onerror = (event) => onWorkerFailure(event && event.message);
-      worker.postMessage({ type: "init" });
+      // Messages from a worker that has since been replaced (restart) are ignored entirely.
+      created.onmessage = (event) => worker === created && onWorkerMessage(event.data);
+      created.onerror = (event) => worker === created && onWorkerFailure(event && event.message);
+      created.postMessage({ type: "init" });
       if (settings.glasses) requestLandmarker();
       return workerReady;
     }
@@ -244,7 +246,7 @@
         if (pendingInit) pendingInit.resolve(msg.initMs);
         pendingInit = null;
       } else if (msg.type === "landmarker-ready") {
-        if (worker) setLandmarker("ready");
+        setLandmarker("ready");
       } else if (msg.type === "landmarker-error") {
         setLandmarker("error", msg.message);
       } else if (msg.type === "result") {

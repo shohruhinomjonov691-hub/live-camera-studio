@@ -59,13 +59,15 @@ function setup({ secure = true, deferBitmaps = false } = {}) {
   const captured = [];
   const states = [];
   let gum;
-  const worker = {
+  // Every createWorker() call returns a new fake worker, like `new Worker()`.
+  const workers = [];
+  const makeWorker = () => ({
     posted: [],
     terminated: false,
     postMessage(msg) { this.posted.push(msg); },
     terminate() { this.terminated = true; },
     reply(msg) { this.onmessage({ data: msg }); },
-  };
+  });
   const env = {
     video: { srcObject: null, readyState: 4, paused: true, play: async function () { this.paused = false; }, pause() { this.paused = true; } },
     view: fakeCanvas("view"),
@@ -77,7 +79,11 @@ function setup({ secure = true, deferBitmaps = false } = {}) {
     },
     isSecureContext: secure,
     mediaDevices: { getUserMedia: () => new Promise((resolve, reject) => (gum = { resolve, reject })) },
-    createWorker: () => worker,
+    createWorker: () => {
+      const created = makeWorker();
+      workers.push(created);
+      return created;
+    },
     createImageBitmap: (source) => {
       const bitmap = fakeBitmap(source === env.video ? "frame" : `copy-of-${source.id}`);
       if (source === env.video) captured.push(bitmap);
@@ -104,9 +110,12 @@ function setup({ secure = true, deferBitmaps = false } = {}) {
   const camera = context.createCameraController(env);
 
   return {
-    camera, env, worker, captured, states, timers, bitmapRequests,
+    camera, env, captured, states, timers, bitmapRequests, workers,
+    get worker() {
+      return workers.at(-1);
+    },
     buffer: () => made[0],
-    detects: () => worker.posted.filter((m) => m.type === "detect"),
+    detects: () => workers.at(-1).posted.filter((m) => m.type === "detect"),
     gum: () => gum,
     state: () => camera.state,
     async runFrame() {
@@ -121,7 +130,7 @@ function setup({ secure = true, deferBitmaps = false } = {}) {
     fireTimers(ms) {
       timers.forEach((t) => { if (!t.done && t.ms <= ms) { t.done = true; t.fn(); } });
     },
-    lastDetect: () => worker.posted.filter((m) => m.type === "detect").at(-1),
+    lastDetect: () => workers.at(-1).posted.filter((m) => m.type === "detect").at(-1),
   };
 }
 
@@ -745,9 +754,10 @@ test("[g] restarting the detector reloads the landmarker for the new worker", as
   const h = setup();
   await liveWithGlasses(h);
   h.camera.restartDetector();
-  assert.equal(h.worker.terminated, true);
+  assert.equal(h.workers.length, 2);
+  assert.equal(h.workers[0].terminated, true);
   assert.equal(h.camera.effect, "loading");
-  assert.equal(h.worker.posted.filter((m) => m.type === "init-landmarker").length, 2);
+  assert.equal(h.worker.posted.filter((m) => m.type === "init-landmarker").length, 1, "new worker loads it");
 });
 
 test("[s] snapshot copies only the visible processed canvas, without boxes", async () => {
@@ -810,4 +820,25 @@ test("[s] no snapshot while loading, pending, hidden, timed out, in error or sto
 
   h.camera.stop();
   assert.equal(h.camera.snapshot(), null, "stopped");
+});
+
+// ---------- Codex review of 2-batch (2026-10-08) ----------
+
+test("[w] messages from a replaced worker cannot change the new worker's state", async () => {
+  const h = setup();
+  await liveWithGlasses(h, { ready: false });
+  const old = h.workers[0];
+  h.camera.restartDetector();
+  assert.equal(h.camera.effect, "loading");
+
+  old.reply({ type: "landmarker-ready", initMs: 1 }); // late delivery from the terminated worker
+  assert.equal(h.camera.effect, "loading", "old worker cannot mark the new landmarker ready");
+  old.reply({ type: "landmarker-error", message: "late" });
+  assert.equal(h.camera.effect, "loading");
+  old.reply({ type: "ready", initMs: 1 });
+  old.onerror({ message: "late crash" });
+  assert.notEqual(h.state(), "error", "old worker errors are ignored");
+
+  h.worker.reply({ type: "landmarker-ready", initMs: 1 });
+  assert.equal(h.camera.effect, "ready", "the current worker still can");
 });

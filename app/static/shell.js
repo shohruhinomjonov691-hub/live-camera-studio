@@ -45,6 +45,8 @@
   });
   // For manual measurement in the browser console: liveCamera.stats()
   window.liveCamera = camera;
+  // For tests: the snapshot flow without DOM events.
+  window.liveCameraShell = { takeSnapshot, snapshots: () => ui.snapshots.slice() };
 
   // ---------- tabs and language ----------
   function setTab(tab) {
@@ -145,11 +147,15 @@
     return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   }
 
+  // Bumped on pagehide: a snapshot still being encoded at that moment is discarded when it finishes.
+  let snapshotGeneration = 0;
+
   async function takeSnapshot() {
     const canvas = camera.snapshot({ mirror: isMirrored() });
     if (!canvas) return;
+    const generation = snapshotGeneration;
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!blob) return;
+    if (!blob || generation !== snapshotGeneration) return;
     const shot = { url: URL.createObjectURL(blob), name: `live-camera-studio-${stamp()}.png`, w: canvas.width, h: canvas.height };
     ui.snapshots.unshift(shot);
     ui.snapshots.splice(MAX_SNAPSHOTS).forEach((old) => URL.revokeObjectURL(old.url));
@@ -236,6 +242,7 @@
     if (document.visibilityState === "hidden" && camera.active) camera.stop("hidden");
   });
   window.addEventListener("pagehide", () => {
+    snapshotGeneration++;
     if (camera.active) camera.stop();
     ui.snapshots.forEach((shot) => URL.revokeObjectURL(shot.url));
     ui.snapshots = [];

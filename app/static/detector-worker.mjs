@@ -37,32 +37,51 @@ function provideModuleFactory() {
   self.ModuleFactory = ModuleFactory;
 }
 
-async function loadFileset() {
+// Task creation is async and each task consumes (and clears) self.ModuleFactory, so two creations must
+// never overlap — e.g. the detector and the landmarker when the glasses effect is already on. Queue them.
+let taskQueue = Promise.resolve();
+function oneAtATime(create) {
+  const run = taskQueue.then(create);
+  taskQueue = run.catch(() => {});
+  return run;
+}
+
+function loadFileset() {
   // true = the ES-module WASM loader, which works in a module worker (no importScripts).
-  if (!fileset) fileset = await FilesetResolver.forVisionTasks(WASM_BASE, true);
+  // One shared promise, so parallel inits do not resolve it twice.
+  if (!fileset) {
+    fileset = FilesetResolver.forVisionTasks(WASM_BASE, true);
+    fileset.catch(() => (fileset = null)); // allow a retry after a failure
+  }
   return fileset;
 }
 
 async function initDetector() {
   const started = performance.now();
-  provideModuleFactory();
-  detector = await FaceDetector.createFromOptions(await loadFileset(), {
-    baseOptions: { modelAssetPath: DETECTOR_MODEL, delegate: "CPU" },
-    runningMode: "VIDEO",
-    minDetectionConfidence: MIN_CONFIDENCE,
+  const files = await loadFileset();
+  detector = await oneAtATime(() => {
+    provideModuleFactory();
+    return FaceDetector.createFromOptions(files, {
+      baseOptions: { modelAssetPath: DETECTOR_MODEL, delegate: "CPU" },
+      runningMode: "VIDEO",
+      minDetectionConfidence: MIN_CONFIDENCE,
+    });
   });
   return performance.now() - started;
 }
 
 async function initLandmarker() {
   const started = performance.now();
-  provideModuleFactory();
-  landmarker = await FaceLandmarker.createFromOptions(await loadFileset(), {
-    baseOptions: { modelAssetPath: LANDMARKER_MODEL, delegate: "CPU" },
-    runningMode: "VIDEO",
-    numFaces: MAX_FACES_WITH_GLASSES,
-    outputFaceBlendshapes: false,
-    outputFacialTransformationMatrixes: false,
+  const files = await loadFileset();
+  landmarker = await oneAtATime(() => {
+    provideModuleFactory();
+    return FaceLandmarker.createFromOptions(files, {
+      baseOptions: { modelAssetPath: LANDMARKER_MODEL, delegate: "CPU" },
+      runningMode: "VIDEO",
+      numFaces: MAX_FACES_WITH_GLASSES,
+      outputFaceBlendshapes: false,
+      outputFacialTransformationMatrixes: false,
+    });
   });
   return performance.now() - started;
 }
