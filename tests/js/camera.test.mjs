@@ -531,3 +531,77 @@ test("after Stop and restart the pipeline is not left busy", async () => {
   await showFrame(h);
   assert.equal(h.state(), "live");
 });
+
+// ---------- Codex re-review (2026-10-08) regressions ----------
+
+test("[r1] blur OFF -> ON while the first frame is still pending keeps the stream going", async () => {
+  const h = setup();
+  h.camera.setSettings({ blurOn: false });
+  await goLive(h);
+  await h.runFrame(); // first frame in flight, still "loading"
+  assert.equal(h.state(), "loading");
+
+  h.camera.setSettings({ blurOn: true });
+  assert.equal(h.state(), "loading");
+  assert.ok(h.pendingFrames() >= 1, "a new frame is scheduled, the loop did not stall");
+  await showFrame(h);
+  assert.equal(h.state(), "live");
+  assert.equal(h.detects().length, 2);
+});
+
+test("[r2] a late detect error from a timed-out frame does not cancel the next frame", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const stale = h.lastDetect();
+  h.fireTimers(1000); // frame 1 times out
+  await h.runFrame(); // frame 2 in flight
+  const current = h.lastDetect();
+  const frame2 = h.captured.at(-1);
+  assert.notEqual(current.frameId, stale.frameId);
+
+  h.worker.reply({ type: "error", stage: "detect", session: stale.session, frameId: stale.frameId, message: "late" });
+  assert.notEqual(h.state(), "error");
+  assert.equal(frame2.closed, false, "frame 2 is still in the pipeline");
+
+  h.worker.reply({ type: "result", session: current.session, frameId: current.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
+  assert.equal(h.state(), "live");
+  assert.equal(frame2.closed, true);
+});
+
+test("[r2] a detect error for the current frame still fails closed", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "error", stage: "detect", session: msg.session, frameId: msg.frameId, message: "boom" });
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "detector" }]);
+});
+
+test("[r3] every box size is either really reduced or filled solid (incl. 1×1 and thin boxes)", () => {
+  const context = { console };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(CAMERA_JS, context);
+  const { obscure } = context.liveCameraInternals;
+  const sizes = [];
+  for (let n = 1; n <= 40; n++) sizes.push([n, n], [n, 1], [1, n], [n, 3], [3, n], [n, 4]);
+  for (const method of ["pixel", "gauss"]) {
+    for (const strength of [1, 2, 3]) {
+      for (const [w, h] of sizes) {
+        const target = fakeCanvas("frame");
+        const scratch = fakeCanvas("scratch");
+        obscure(target.getContext("2d"), scratch, { x: 0, y: 0, w, h }, method, strength);
+        const paints = target.ops.filter((op) => op[0] === "drawImage");
+        const filled = target.ops.some((op) => op[0] === "fillRect");
+        const label = `${method}/${strength}/${w}x${h}`;
+        if (filled) {
+          assert.equal(paints.length, 0, `${label}: filled box must not also redraw pixels`);
+        } else {
+          assert.ok(scratch.width * 2 <= w && scratch.height * 2 <= h, `${label}: scratch ${scratch.width}x${scratch.height} is not a reduction`);
+          assert.ok(paints.every((op) => op[1] === scratch), `${label}: only the reduced copy is painted`);
+        }
+      }
+    }
+  }
+});

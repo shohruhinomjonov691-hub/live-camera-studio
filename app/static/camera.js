@@ -39,7 +39,8 @@
   /** Obscure one box of ctx's canvas in place. */
   function obscure(ctx, scratch, box, method, strength) {
     const { x, y, w, h } = box;
-    if (method === "block") {
+    // A box smaller than one cell cannot be reduced (e.g. 1×1 left after clipping), so it is filled.
+    if (method === "block" || Math.min(w, h) < MIN_CELL) {
       ctx.fillStyle = "#0b0d11";
       ctx.fillRect(x, y, w, h);
       return;
@@ -176,7 +177,8 @@
         if (msg.stage === "init") {
           if (pendingInit) pendingInit.reject(new Error(msg.message));
           pendingInit = null;
-        } else if (msg.session === camSession) {
+        } else if (msg.session === camSession && job && msg.frameId === job.id) {
+          // Errors for a frame that already timed out (or any older frame) are ignored like its result.
           fail("detector");
         }
       }
@@ -448,10 +450,10 @@
           // that are captured and processed with blur on.
           dropJob();
           clearView();
-          if (state === "live" || state === "hidden") {
-            setState("hidden", { why: "pending" });
-            schedule();
-          }
+          if (state === "live" || state === "hidden") setState("hidden", { why: "pending" });
+          // The dropped job may have been the only thing keeping the loop alive (e.g. the first frame
+          // while still "loading"), so always ask for the next frame. tick() waits for the detector.
+          if (stream && state !== "error") schedule();
         }
       },
       get settings() {
