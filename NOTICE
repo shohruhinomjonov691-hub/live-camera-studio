@@ -1,0 +1,15 @@
+Live Camera Studio
+Copyright (c) 2026 Shokhrukhbek Inomjonov
+
+The project code is licensed under the MIT License (see LICENSE).
+
+This repository also contains third-party files that keep their own licenses:
+
+- app/static/vendor/mediapipe/ — the MediaPipe Tasks Vision package (@mediapipe/tasks-vision 1.0.1) and the
+  BlazeFace short-range, Face Landmarker and Selfie Segmenter models,
+  licensed under the Apache License, Version 2.0.
+  The license text is in app/static/vendor/mediapipe/LICENSE; sources, versions, SHA-256 hashes and the
+  model-card license statements are in app/static/vendor/mediapipe/SOURCES.md.
+
+The OpenCV Haar cascade used for photo uploads is not part of this repository; it is installed with the
+opencv-python-headless package.

@@ -177,7 +177,7 @@ tests/                        pytest suite; tests/js/ Node tests
 
 ## License
 
-The project code is licensed under the [MIT License](LICENSE). Files under `app/static/vendor/mediapipe/` (the MediaPipe Tasks Vision package and the BlazeFace, Face Landmarker and Selfie Segmenter models) keep their Apache License 2.0; see that folder's `LICENSE` and `SOURCES.md`.
+The project code is licensed under the [MIT License](LICENSE). Files under `app/static/vendor/mediapipe/` (the MediaPipe Tasks Vision package and the BlazeFace, Face Landmarker and Selfie Segmenter models) keep their Apache License 2.0; see [`NOTICE`](NOTICE) and that folder's `LICENSE` and `SOURCES.md`.
 
 ## Author
 

@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # The app, including the vendored MediaPipe package and models under app/static/vendor/ (no CDN at runtime).
 COPY app ./app
-COPY LICENSE README.md ./
+COPY LICENSE NOTICE README.md ./
 
 # Unprivileged user; the image needs no write access at runtime (run with a read-only root filesystem).
 RUN useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin app

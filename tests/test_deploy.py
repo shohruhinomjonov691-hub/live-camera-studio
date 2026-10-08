@@ -63,7 +63,12 @@ def test_dockerfile_runs_unprivileged_with_healthcheck_and_pinned_base():
 
 
 def test_license_is_mit_and_keeps_vendor_licenses():
-    assert read("LICENSE").startswith("MIT License")
+    license_text = read("LICENSE")
+    assert license_text.startswith("MIT License")
+    # The standard MIT text only, so GitHub recognises the license; third-party notes live in NOTICE.
+    assert license_text.rstrip().endswith("SOFTWARE.") and "Apache" not in license_text
+    notice = read("NOTICE")
+    assert "app/static/vendor/mediapipe/" in notice and "Apache License, Version 2.0" in notice
     assert (ROOT / "app/static/vendor/mediapipe/LICENSE").read_text().lstrip().startswith("Apache License")
 
 
