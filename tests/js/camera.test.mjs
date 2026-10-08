@@ -906,3 +906,64 @@ test("[ux] blur ON while a glasses frame is in flight: canvas wiped at once, old
   assert.ok(firstIndex(h.buffer(), "clip") >= 0);
   assert.equal(glassesOps(h.buffer()), 0);
 });
+
+// ---------- Codex review: effect failure inside compose ----------
+
+test("[p1] glasses ON, zero faces, drawing fails: blur comes back and the frame is hidden, not shown", async () => {
+  const h = setup();
+  await liveWithGlasses(h);
+  await showFrame(h, FACE); // a glasses frame (blur off) is on screen
+  await h.runFrame();
+  const msg = h.lastDetect();
+  const frame = h.captured.at(-1);
+  const viewDrawsBefore = viewDraws(h.env.view).length;
+  h.buffer().throwOn = "arcTo";
+  reply(h, msg, { faces: [], eyes: EYES });
+  h.buffer().throwOn = null;
+
+  assert.equal(h.camera.settings.blurOn, true, "fallback turned blur on");
+  assert.equal(h.camera.settings.glasses, false);
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "noface" }]);
+  assert.equal(viewDraws(h.env.view).length, viewDrawsBefore, "the unblurred buffer never reaches the view");
+  assert.ok(cleared(h.env.view) && cleared(h.env.overlay) && cleared(h.buffer()));
+  assert.equal(h.camera.canSnapshot(), false);
+  assert.equal(h.camera.snapshot(), null);
+  assert.equal(frame.closed, true);
+
+  await showFrame(h, FACE); // recovers with the next frame, blurred
+  assert.equal(h.state(), "live");
+  assert.ok(firstIndex(h.buffer(), "clip") >= 0);
+  assert.ok(h.captured.every((b) => b.closed));
+});
+
+test("[p1] control: glasses ON, a face, drawing fails: the same frame is shown blurred", async () => {
+  const h = setup();
+  await liveWithGlasses(h);
+  await h.runFrame();
+  h.buffer().throwOn = "arcTo";
+  reply(h, h.lastDetect(), { faces: FACE, eyes: EYES });
+  h.buffer().throwOn = null;
+  assert.equal(h.state(), "live");
+  assert.ok(firstIndex(h.buffer(), "clip") >= 0, "blurred");
+  assert.ok(h.camera.canSnapshot());
+});
+
+test("[p1] control: glasses ON, zero faces, no error: the frame is shown (blur off by choice)", async () => {
+  const h = setup();
+  await liveWithGlasses(h);
+  await h.runFrame();
+  reply(h, h.lastDetect(), { faces: [], eyes: EYES });
+  assert.equal(h.state(), "live");
+  assert.equal(h.camera.settings.blurOn, false);
+  assert.ok(glassesOps(h.buffer()) > 0);
+});
+
+test("[p1] control: landmark error in a zero-face result is hidden too (fallback before compose)", async () => {
+  const h = setup();
+  await liveWithGlasses(h);
+  await h.runFrame();
+  reply(h, h.lastDetect(), { faces: [], eyes: null, landmarksError: "graph failed" });
+  assert.equal(h.camera.settings.blurOn, true);
+  assert.equal(h.state(), "hidden");
+  assert.equal(h.camera.canSnapshot(), false);
+});

@@ -265,3 +265,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .mobile-dock .left { justify-self: start; }
   .toast { left: 12px; right: 12px; bottom: 92px; }
 }
+.effect-alert {
+  display: flex; align-items: center; gap: 10px; margin: 0 12px 12px; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: rgba(245,184,74,.08); border: 1px solid rgba(245,184,74,.35); color: #f6e4b8; font-size: 13.5px;
+}
+.effect-alert span { flex: 1; }
+.effect-alert[hidden] { display: none !important; }

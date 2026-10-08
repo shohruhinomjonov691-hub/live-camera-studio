@@ -8,7 +8,8 @@
 
   const OVERLAYS = ["idle", "insecure", "prompt", "loading", "hidden", "denied", "nocam", "ended", "error"];
   const STREAMING = ["live", "hidden"];
-  const ui = { tab: "camera", camState: "idle", camInfo: null, stats: null, effect: "off", snapshots: [] };
+  // effectAlert: the glasses effect failed (and blur came back). Cleared only by Dismiss or a retry.
+  const ui = { tab: "camera", camState: "idle", camInfo: null, stats: null, effect: "off", effectAlert: false, snapshots: [] };
   const MAX_SNAPSHOTS = 6;
 
   const video = $("#cam-video");
@@ -42,13 +43,21 @@
       ui.effect = status;
       renderEffect();
     },
-    // The controller changed settings itself (an effect failure turns blur back on): sync the toggles.
-    onSettings: () => renderAllSettings(),
+    // The glasses effect failed while on: the controller turned glasses off and blur back on.
+    // Say so (sticky) and sync the toggles.
+    onEffectFallback: () => {
+      ui.effectAlert = true;
+      renderAllSettings();
+    },
   });
   // For manual measurement in the browser console: liveCamera.stats()
   window.liveCamera = camera;
   // For tests: the snapshot flow without DOM events.
-  window.liveCameraShell = { takeSnapshot, snapshots: () => ui.snapshots.slice(), selectMode: (mode) => selectMode(mode) };
+  window.liveCameraShell = {
+    takeSnapshot,
+    snapshots: () => ui.snapshots.slice(),
+    selectMode: (mode) => selectMode(mode),
+  };
 
   // ---------- tabs and language ----------
   function setTab(tab) {
@@ -228,12 +237,19 @@
     note.textContent = t(s.glasses ? "effects.faceVisible" : "effects.exclusive");
     note.classList.toggle("warn-line", s.glasses);
     const status = $("#effect-status");
-    const message = s.glasses ? { loading: "effects.loading", error: "effects.error" }[ui.effect] : null;
-    status.hidden = !message;
-    status.classList.toggle("error", ui.effect === "error");
-    if (message) status.textContent = t(message);
+    const loading = s.glasses && ui.effect === "loading";
+    status.hidden = !loading;
+    if (loading) status.textContent = t("effects.loading");
+    // Independent of the glasses toggle (the failure itself turned glasses off).
+    $("#effect-alert").hidden = !ui.effectAlert;
+    $("#effect-alert-text").textContent = t("effects.error");
   }
+  $("#effect-alert-dismiss").addEventListener("click", () => {
+    ui.effectAlert = false;
+    renderEffect();
+  });
   $("#t-glasses").addEventListener("change", (e) => {
+    if (e.target.checked) ui.effectAlert = false; // an explicit retry
     camera.setSettings({ glasses: e.target.checked }); // ON turns face blur OFF; OFF leaves blur as it is
     renderAllSettings();
   });

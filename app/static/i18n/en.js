@@ -106,7 +106,7 @@ window.LCS_I18N.en = {
   "effects.glasses.sub": "Placed on the eye landmarks of each frame and follows head tilt. Turns face blur off.",
   "effects.size": "Size",
   "effects.loading": "Loading face landmarks (local file)…",
-  "effects.error": "Glasses are unavailable right now, so face blur was turned back on.",
+  "effects.error": "The glasses effect stopped working, so face blur was turned back on.",
   "ctrl.snap": "Snapshot",
   "dock.snap": "Take snapshot",
   "snap.disabled": "Available while a processed frame is on screen",
@@ -120,6 +120,7 @@ window.LCS_I18N.en = {
   "toast.meta": "{w}×{h} · PNG · no metadata",
   "effects.exclusive": "Glasses and face blur are exclusive: turning glasses on turns face blur off. Opening Privacy turns face blur on and glasses off. Turning glasses off yourself does not turn blur back on.",
   "effects.faceVisible": "Glasses are on, so face blur is off — faces are visible in the preview and in snapshots.",
+  "effects.dismiss": "Dismiss",
   "background.soon": "Background blur and replacement are planned for a later update.",
 
   "upload.title": "Choose a photo",

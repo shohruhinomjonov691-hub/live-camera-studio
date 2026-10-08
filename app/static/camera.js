@@ -241,7 +241,7 @@
         if (state === "live" || state === "hidden") setState("hidden", { why: "pending" });
         if (stream && state !== "error") schedule();
       }
-      if (env.onSettings) env.onSettings({ ...settings });
+      if (env.onEffectFallback) env.onEffectFallback({ ...settings }, message);
     }
 
     /** Load the landmarker in the worker (once). Without a worker it is requested when one is created. */
@@ -469,9 +469,11 @@
         if (settings.blurOn && faces.length === 0) {
           clearView();
           setState("hidden", { why: "noface" });
-        } else {
-          compose(current.frame, faces, eyes);
+        } else if (compose(current.frame, faces, eyes)) {
           setState("live", { faces: faces.length, blurOn: settings.blurOn });
+        } else {
+          // An effect failure inside compose turned blur back on and there is no face to blur.
+          setState("hidden", { why: "noface" });
         }
       } catch (error) {
         fail("render"); // clears the canvas; nothing half-drawn stays visible
@@ -483,6 +485,7 @@
       schedule();
     }
 
+    /** Draw one processed frame. Returns false (and leaves every canvas cleared) if it must not be shown. */
     function compose(frame, faces, eyes = []) {
       const width = frame.width;
       const height = frame.height;
@@ -502,6 +505,12 @@
           effectFailed(String((error && error.message) || error), { midCompose: true });
         }
       }
+      // The effect step may have switched blur back on: re-check the fail-closed rule before anything
+      // reaches the screen. With blur on and no face, nothing of this frame may be shown.
+      if (settings.blurOn && faces.length === 0) {
+        clearView();
+        return false;
+      }
       const boxes = faces.map((face) => boxFor(face, width, height)).filter(Boolean);
       // Hiding faces is the last layer, over any effect.
       if (settings.blurOn) boxes.forEach((box) => obscure(bctx, scratch, box, settings.method, settings.strength));
@@ -519,6 +528,7 @@
       }
       perf.frameSize = { w: width, h: height };
       viewReady = true;
+      return true;
     }
 
     function canSnapshot() {

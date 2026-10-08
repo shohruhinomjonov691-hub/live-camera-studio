@@ -192,6 +192,12 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg><span data-i18n="mode.background">Background</span></button>
     </div>
 
+    <!-- Shown whatever the tab or toggle state until the user dismisses it or turns glasses on again. -->
+    <div class="effect-alert" id="effect-alert" role="alert" hidden>
+      <span id="effect-alert-text" data-i18n="effects.error"></span>
+      <button type="button" class="btn small ghost" id="effect-alert-dismiss" data-i18n="effects.dismiss">Dismiss</button>
+    </div>
+
     <div class="panel-body" id="p-privacy">
       <div class="row">
         <label for="t-blur"><span class="label" data-i18n="privacy.blur">Blur faces</span><span class="sub" data-i18n="privacy.blur.sub"></span></label>

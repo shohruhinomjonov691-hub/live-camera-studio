@@ -106,7 +106,7 @@ window.LCS_I18N.ko = {
   "effects.glasses.sub": "프레임마다 눈 랜드마크에 맞춰 배치되고 고개 기울기를 따라갑니다. 켜면 얼굴 블러가 꺼집니다.",
   "effects.size": "크기",
   "effects.loading": "얼굴 랜드마크 불러오는 중 (로컬 파일)…",
-  "effects.error": "지금은 안경 효과를 사용할 수 없어 얼굴 블러를 다시 켰습니다.",
+  "effects.error": "안경 효과가 작동하지 않아 얼굴 블러를 다시 켰습니다.",
   "ctrl.snap": "스냅샷",
   "dock.snap": "스냅샷 찍기",
   "snap.disabled": "처리된 프레임이 화면에 있을 때 사용할 수 있습니다",
@@ -120,6 +120,7 @@ window.LCS_I18N.ko = {
   "toast.meta": "{w}×{h} · PNG · 메타데이터 없음",
   "effects.exclusive": "안경과 얼굴 블러는 함께 사용할 수 없습니다. 안경을 켜면 얼굴 블러가 꺼지고, 프라이버시를 열면 얼굴 블러가 켜지고 안경이 꺼집니다. 안경을 직접 끄면 블러는 자동으로 다시 켜지지 않습니다.",
   "effects.faceVisible": "안경이 켜져 있어 얼굴 블러가 꺼져 있습니다. 미리보기와 스냅샷에 얼굴이 그대로 보입니다.",
+  "effects.dismiss": "닫기",
   "background.soon": "배경 블러 및 교체는 이후 업데이트에서 제공될 예정입니다.",
 
   "upload.title": "사진 선택",

@@ -310,3 +310,48 @@ test("[ux] the Privacy texts follow the language", () => {
   h.context.liveCameraShell.selectMode("privacy");
   assert.equal(h.el("#effect-blur-note").textContent.startsWith("안경과 얼굴 블러는"), true);
 });
+
+// ---------- Codex review: the effect-failure message stays visible ----------
+
+test("[p2] after an effect failure the alert stays, survives re-renders and language, and clears only on dismiss or retry", async () => {
+  const h = loadShell({ realCamera: true });
+  const worker = await goLiveInShell(h);
+  h.toggle("#t-glasses", true);
+  assert.equal(h.el("#effect-alert").hidden, true);
+
+  worker.onmessage({ data: { type: "landmarker-error", message: "model blocked" } });
+  assert.equal(h.el("#t-glasses").checked, false, "glasses were turned off automatically");
+  assert.equal(h.el("#t-blur").checked, true, "blur came back");
+  assert.equal(h.el("#effect-alert").hidden, false, "the failure is announced");
+  assert.equal(h.el("#effect-alert-text").textContent, EN("effects.error"));
+
+  // Ordinary renders do not hide it.
+  h.context.liveCameraShell.selectMode("effects");
+  h.context.liveCameraShell.selectMode("privacy");
+  h.el("#t-glasses-size").value = "110";
+  h.el("#t-glasses-size").listeners.input.forEach((fn) => fn({ target: h.el("#t-glasses-size") }));
+  assert.equal(h.el("#effect-alert").hidden, false);
+  h.context.i18n.setLang("ko");
+  assert.equal(h.el("#effect-alert-text").textContent, "안경 효과가 작동하지 않아 얼굴 블러를 다시 켰습니다.");
+
+  // Dismiss clears it.
+  h.el("#effect-alert-dismiss").listeners.click.forEach((fn) => fn());
+  assert.equal(h.el("#effect-alert").hidden, true);
+
+  // A new failure shows it again; an explicit retry (turning glasses on) clears it.
+  h.toggle("#t-glasses", true);
+  worker.onmessage({ data: { type: "landmarker-error", message: "again" } });
+  assert.equal(h.el("#effect-alert").hidden, false);
+  h.toggle("#t-glasses", true);
+  assert.equal(h.el("#effect-alert").hidden, true);
+});
+
+test("[p2] a landmarker error while glasses are already off does not claim blur was turned back on", async () => {
+  const h = loadShell({ realCamera: true });
+  const worker = await goLiveInShell(h);
+  h.toggle("#t-glasses", true);
+  h.toggle("#t-glasses", false); // the user turned glasses off; blur stays off
+  worker.onmessage({ data: { type: "landmarker-error", message: "late" } });
+  assert.equal(h.el("#effect-alert").hidden, true);
+  assert.equal(h.el("#t-blur").checked, false);
+});
