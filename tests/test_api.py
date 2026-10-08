@@ -106,6 +106,21 @@ def test_blur_rejects_bad_regions(client):
     assert response.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '[{"x": 1' + "0" * 400 + ', "y": 0, "w": 5, "h": 5}]',  # overflowed math.isfinite -> 500
+        '[{"x": 1e400, "y": 0, "w": 5, "h": 5}]',
+        '[{"x": 0, "y": 0, "w": 99999, "h": 5}]',
+        '[{"x": -5, "y": 0, "w": 5, "h": 5}]',
+    ],
+)
+def test_blur_rejects_out_of_range_coordinates_with_400(client, raw):
+    response = client.post("/api/blur", content=make_jpeg(), headers={"X-Regions": raw})
+    assert response.status_code == 400
+    assert "detail" in response.json()
+
+
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
 _audit = {"active": False, "writes": []}
 

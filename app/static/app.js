@@ -11,9 +11,14 @@ const state = {
   nextId: 1,
   resultUrl: null,
   originalUrl: null,
+  // Every accepted file starts a new session; async results from an older session are dropped,
+  // so a slow detect/blur for file A can never apply A's regions or preview to file B.
+  session: 0,
   blurSeq: 0,
   draft: null,
 };
+
+let dragStart = null;
 
 const el = {
   file: document.getElementById("file"),
@@ -88,11 +93,21 @@ async function onFileSelected() {
     return;
   }
 
+  // Invalidate everything that belongs to the previous file before any await.
+  const session = ++state.session;
+  state.blurSeq++; // drops a pending blur of the previous file
   resetResult();
   if (state.originalUrl) URL.revokeObjectURL(state.originalUrl);
+  state.originalUrl = null;
   state.file = file;
+  state.width = 0;
+  state.height = 0;
   state.regions = [];
   state.nextId = 1;
+  state.draft = null;
+  dragStart = null;
+  el.preview.removeAttribute("src");
+  el.workspace.hidden = true;
   setDrawMode(false);
   setStatus("Yuzlar aniqlanmoqda…");
 
@@ -103,16 +118,18 @@ async function onFileSelected() {
       headers: { "Content-Type": file.type },
       body: file,
     });
+    if (session !== state.session) return;
     if (!response.ok) {
-      setStatus(await errorMessage(response), true);
-      el.workspace.hidden = true;
+      const message = await errorMessage(response);
+      if (session === state.session) setStatus(message, true);
       return;
     }
     data = await response.json();
   } catch (_) {
-    setStatus("Serverga ulanib bo‘lmadi.", true);
+    if (session === state.session) setStatus("Serverga ulanib bo‘lmadi.", true);
     return;
   }
+  if (session !== state.session) return; // another file was chosen while this one was detected
 
   state.width = data.width;
   state.height = data.height;
@@ -125,8 +142,12 @@ async function onFileSelected() {
 }
 
 async function requestBlur() {
-  if (!state.file) return;
+  if (!state.file || !state.width) return;
+  const session = state.session;
+  const file = state.file;
   const seq = ++state.blurSeq;
+  // A result is current only if no newer blur started and no other file was chosen.
+  const current = () => seq === state.blurSeq && session === state.session;
   el.download.setAttribute("aria-disabled", "true");
   setStatus("Xiralashtirilmoqda…");
 
@@ -134,25 +155,26 @@ async function requestBlur() {
   try {
     const response = await fetch("/api/blur", {
       method: "POST",
-      headers: { "Content-Type": state.file.type, "X-Regions": JSON.stringify(regions) },
-      body: state.file,
+      headers: { "Content-Type": file.type, "X-Regions": JSON.stringify(regions) },
+      body: file,
     });
-    if (seq !== state.blurSeq) return; // a newer request superseded this one
+    if (!current()) return;
     if (!response.ok) {
-      setStatus(await errorMessage(response), true);
+      const message = await errorMessage(response);
+      if (current()) setStatus(message, true);
       return;
     }
     const blob = await response.blob();
-    if (seq !== state.blurSeq) return;
+    if (!current()) return;
     resetResult();
     state.resultUrl = URL.createObjectURL(blob);
     el.preview.src = state.resultUrl;
     el.download.href = state.resultUrl;
-    el.download.download = downloadName(state.file.name, blob.type);
+    el.download.download = downloadName(file.name, blob.type);
     el.download.setAttribute("aria-disabled", "false");
     setStatus(state.regions.length ? "Preview tayyor. Tekshirib, yuklab oling." : "Xiralashtiriladigan hudud yo‘q.");
   } catch (_) {
-    if (seq === state.blurSeq) setStatus("Serverga ulanib bo‘lmadi.", true);
+    if (current()) setStatus("Serverga ulanib bo‘lmadi.", true);
   }
 }
 
@@ -225,8 +247,6 @@ function setDrawMode(on) {
   el.overlay.classList.toggle("drawing", on);
   el.hint.hidden = !on;
 }
-
-let dragStart = null;
 
 el.overlay.addEventListener("pointerdown", (event) => {
   if (el.draw.getAttribute("aria-pressed") !== "true" || !state.width) return;

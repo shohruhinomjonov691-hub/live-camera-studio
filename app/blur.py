@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from app.config import AUTO_PADDING, MAX_REGIONS
+from app.config import AUTO_PADDING, MAX_REGIONS, MAX_SIDE
 from app.image_io import ImageError
 
 SOURCES = ("auto", "manual")
@@ -42,8 +42,15 @@ def parse_regions(raw: str | None) -> list[Region]:
         values = []
         for key in ("x", "y", "w", "h"):
             value = item.get(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ImageError(400, f"Hududdagi '{key}' qiymati noto‘g‘ri.")
+            # Check floats for NaN/inf, then compare against the bounds before any conversion:
+            # JSON integers are unbounded, and math.isfinite(10**400) raises OverflowError.
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ImageError(400, f"Hududdagi '{key}' qiymati noto‘g‘ri.")
+            low = 0 if key in ("x", "y") else 1
+            if not low <= value <= MAX_SIDE:
+                raise ImageError(400, f"Hududdagi '{key}' qiymati {low}–{MAX_SIDE} oralig‘ida bo‘lishi kerak.")
             values.append(round(value))
         source = item.get("source", "manual")
         if source not in SOURCES:

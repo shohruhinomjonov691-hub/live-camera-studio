@@ -30,6 +30,7 @@ The detector is reused from the `cv_opencv.ipynb` notebook in [computer_vision](
 | Real format | JPEG or PNG by magic bytes; must match what Pillow decodes |
 | Pixel size | ≤ 25 megapixels and ≤ 8000 px on the longest side (checked from the header before decoding) |
 | Regions per request | ≤ 100 |
+| Region coordinates | `0 ≤ x, y ≤ 8000`, `1 ≤ w, h ≤ 8000`; NaN, infinity and oversized numbers are rejected with `400` |
 
 Invalid input returns `400`, `413`, `415` or `422` with a JSON `detail` message.
 
@@ -60,6 +61,12 @@ Automatic regions are padded by 15% on each side; manual regions are blurred exa
 
 ```bash
 pytest -q
+```
+
+Upload-flow race regressions (stale detect/blur replies after choosing another file) run with Node's built-in test runner, no packages needed:
+
+```bash
+node --test tests/js/*.test.mjs
 ```
 
 Unit and API tests cover invalid/corrupt files, size and pixel limits, EXIF orientation, alpha flattening, region parsing and clipping, blur confined to regions, metadata stripping (EXIF/GPS, PNG text), and that a >1 MB upload opens no file for writing (checked with a Python audit hook) and adds nothing to the temp or project directories.

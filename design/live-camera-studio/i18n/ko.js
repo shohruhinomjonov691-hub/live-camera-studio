@@ -35,6 +35,35 @@ window.LCS_I18N.ko = {
   "prompt.title": "카메라 권한을 기다리는 중",
   "prompt.body": "주소창 옆의 “허용”을 선택하세요. 거부해도 사진 업로드는 계속 사용할 수 있습니다.",
 
+  "prompt.cancel": "취소",
+  "prompt.fine": "일부 브라우저는 이 요청에 응답하지 않을 수 있습니다. 취소하면 대기를 멈추고, 나중에 도착한 스트림은 즉시 닫힙니다.",
+
+  "upload.cta.other": "다른 사진 선택",
+  "upload.detecting": "얼굴을 감지하는 중…",
+  "upload.count": "자동 감지: {auto} · 수동: {manual}",
+  "upload.boxes": "박스 표시",
+  "upload.add": "영역 추가",
+  "upload.hint": "손가락이나 마우스로 얼굴 위를 드래그해 영역을 추가하세요.",
+  "upload.download": "다운로드",
+  "upload.ready": "미리보기가 준비되었습니다. 확인 후 다운로드하세요.",
+  "upload.blurring": "블러 처리 중…",
+  "upload.regions": "블러 처리할 영역",
+  "upload.none": "영역이 없습니다. 놓친 얼굴이 있으면 직접 추가하세요.",
+  "upload.error.title": "이 파일은 처리할 수 없습니다",
+  "tag.auto": "자동",
+  "tag.manual": "수동",
+  "region.remove": "삭제",
+
+  "error.empty_file": "파일이 비어 있습니다.",
+  "error.unsupported_format": "JPEG 또는 PNG 이미지만 사용할 수 있습니다.",
+  "error.file_too_large": "파일은 10MB 이하여야 합니다.",
+  "error.image_too_large": "이미지는 최대 2,500만 화소, 긴 변 8000px 이하여야 합니다.",
+  "error.corrupt_image": "이미지를 읽을 수 없습니다. 파일이 손상되었을 수 있습니다.",
+  "error.invalid_regions": "일부 영역이 올바르지 않습니다. 삭제 후 다시 시도하세요.",
+  "error.too_many_regions": "최대 100개 영역까지 블러 처리할 수 있습니다.",
+  "error.network": "서버에 연결할 수 없습니다.",
+  "error.unknown": "문제가 발생했습니다 (HTTP {status}).",
+
   "loading.title": "준비 중…",
   "loading.s1": "카메라 권한 허용됨",
   "loading.s2": "비디오 스트림 시작 중",
@@ -126,6 +155,5 @@ window.LCS_I18N.ko = {
 
   "upload.title": "사진 선택",
   "upload.limits": "JPEG 또는 PNG · 10MB · 최대 2,500만 화소",
-  "upload.cta": "파일 선택",
-  "upload.fine": "기존 흐름(감지 → 수동 영역 → 미리보기 → 다운로드)은 그대로이며 테마만 바뀝니다."
+  "upload.cta": "파일 선택"
 };

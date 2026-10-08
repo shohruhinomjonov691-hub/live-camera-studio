@@ -200,7 +200,7 @@ button { font: inherit; color: inherit; }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   height: 40px; padding: 0 16px; border-radius: var(--radius-sm);
   border: 1px solid var(--line-2); background: var(--surface-2);
-  font-weight: 600; font-size: 14px; cursor: pointer; white-space: nowrap;
+  font-weight: 600; font-size: 14px; cursor: pointer; white-space: nowrap; text-decoration: none; color: inherit;
 }
 .btn svg { width: 18px; height: 18px; flex: none; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -299,6 +299,43 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 .dropzone h2 { margin: 0; font-size: 20px; }
 .dropzone p { margin: 0; color: var(--muted); }
+.dropzone.error { border-style: solid; border-color: rgba(255,123,123,.45); background: rgba(255,123,123,.04); }
+.dropzone .code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--faint); }
+.status-line { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--muted); font-size: 14.5px; }
+.status-line .spinner { width: 18px; height: 18px; border-width: 2px; }
+.status-line.ok { color: var(--ok); }
+.editor { display: grid; gap: 14px; }
+.toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 10px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line);
+}
+.toolbar .count { font-weight: 650; margin-right: auto; }
+.toolbar .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+.btn[aria-pressed="true"] { background: rgba(251,146,60,.14); border-color: #fb923c; color: #fdba74; }
+.btn.primary[aria-disabled="true"] { opacity: .45; }
+.hint { margin: 0; font-size: 13.5px; color: #fdba74; }
+.photo { position: relative; aspect-ratio: 3 / 2; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line); background: #07090c; }
+.photo svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.photo.drawing { cursor: crosshair; }
+.region { position: absolute; border: 2px solid var(--ok); border-radius: 4px; box-shadow: 0 0 0 1px rgba(0,0,0,.4); }
+.region.manual { border-color: #fb923c; }
+.region.draft { border-style: dashed; border-color: #fb923c; }
+.region .num {
+  position: absolute; left: -2px; top: -2px; padding: 0 6px; font-size: 12px; font-weight: 700;
+  background: var(--ok); color: #05130c; border-radius: 3px 0 4px 0;
+}
+.region.manual .num { background: #fb923c; color: #1c0d02; }
+.region .veil { position: absolute; inset: 0; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.regions { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.regions li {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: 14px;
+}
+.regions li .what { flex: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
+.regions .tag.auto { color: var(--ok); border-color: rgba(60,207,142,.4); }
+.regions .tag.manual { color: #fdba74; border-color: rgba(251,146,60,.45); }
+.regions .btn { height: 32px; padding: 0 10px; font-size: 13px; }
+.editor h3 { margin: 4px 0 0; font-size: 12.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
 
 /* ---------- mobile ---------- */
 .mobile-dock { display: none; }
@@ -325,6 +362,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .overlay-card h2 { font-size: 18px; }
   .overlay-card p, .overlay-card ol { font-size: 14px; }
   .notice { font-size: 13.5px; }
+  .upload-view { padding: 12px 16px 24px; }
+  .toolbar { display: grid; grid-template-columns: 1fr 1fr; }
+  .toolbar .count, .toolbar .toggle, .toolbar .btn.primary { grid-column: 1 / -1; }
 }
 </style>
 </head>
@@ -429,6 +469,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
           <div class="spinner" aria-hidden="true"></div>
           <h2 data-i18n="prompt.title"></h2>
           <p data-i18n="prompt.body"></p>
+          <div class="actions"><button class="btn ghost" data-i18n="prompt.cancel"></button></div>
+          <p class="fineprint" data-i18n="prompt.fine"></p>
         </div>
       </div>
 
@@ -604,17 +646,63 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 <!-- ============ UPLOAD TAB (existing flow, unchanged) ============ -->
 <main id="view-upload" class="upload-view" hidden>
-  <div class="dropzone">
+  <!-- empty -->
+  <div class="dropzone" id="up-empty">
     <div class="state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></div>
     <h2 data-i18n="upload.title"></h2>
     <p data-i18n="upload.limits"></p>
     <button class="btn primary" data-i18n="upload.cta"></button>
   </div>
+
+  <!-- error: message comes from the server's error code, not its text -->
+  <div class="dropzone error" id="up-error" hidden>
+    <div class="state-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+    <h2 data-i18n="upload.error.title"></h2>
+    <p data-i18n="error.unsupported_format"></p>
+    <span class="code">415 · unsupported_format</span>
+    <button class="btn primary" data-i18n="upload.cta.other"></button>
+  </div>
+
+  <!-- detecting -->
+  <p class="status-line" id="up-detecting" hidden><span class="spinner" aria-hidden="true"></span><span data-i18n="upload.detecting"></span></p>
+
+  <!-- editor (auto + manual regions, download) -->
+  <section class="editor" id="up-editor" hidden>
+    <div class="toolbar">
+      <span class="count" id="up-count"></span>
+      <label class="toggle"><span class="switch"><input type="checkbox" checked><span></span></span><span data-i18n="upload.boxes"></span></label>
+      <button class="btn" id="up-draw" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/><path d="M12 8v8M8 12h8"/></svg><span data-i18n="upload.add"></span></button>
+      <button class="btn ghost" data-i18n="upload.cta.other"></button>
+      <a class="btn primary" id="up-download" href="#" aria-disabled="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg><span data-i18n="upload.download"></span></a>
+    </div>
+    <p class="hint" id="up-hint" hidden data-i18n="upload.hint"></p>
+    <div class="photo" id="up-photo">
+      <svg viewBox="0 0 1200 800" preserveAspectRatio="none" aria-hidden="true">
+        <defs><linearGradient id="park" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#9cc3e8"/><stop offset=".55" stop-color="#cfe0c8"/><stop offset="1" stop-color="#5f8a55"/></linearGradient></defs>
+        <rect width="1200" height="800" fill="url(#park)"/>
+        <circle cx="160" cy="430" r="120" fill="#4f7d47"/><circle cx="1060" cy="400" r="150" fill="#4f7d47"/>
+        <path d="M250 800 C260 610 330 560 420 560 C510 560 580 610 590 800Z" fill="#7a4b5f"/>
+        <ellipse cx="420" cy="420" rx="95" ry="120" fill="#e0b392"/>
+        <path d="M325 410 C320 320 370 290 420 290 C485 290 520 330 515 410 C500 360 470 345 420 345 C370 345 340 370 325 410Z" fill="#3a2a20"/>
+        <path d="M640 800 C650 640 710 600 790 600 C870 600 930 640 940 800Z" fill="#2f5671"/>
+        <ellipse cx="790" cy="480" rx="80" ry="102" fill="#c99470"/>
+        <path d="M712 470 C705 395 750 370 790 370 C845 370 875 405 868 470 C855 430 830 418 790 418 C750 418 725 435 712 470Z" fill="#1d1a18"/>
+      </svg>
+      <div class="region auto" style="left:26.5%;top:33%;width:16%;height:31%"><span class="veil"></span><span class="num">1</span></div>
+      <div class="region manual" id="up-manual" style="left:58.5%;top:43%;width:14.5%;height:27%"><span class="veil"></span><span class="num">2</span></div>
+      <div class="region draft" id="up-draft" hidden style="left:58.5%;top:43%;width:10%;height:17%"></div>
+    </div>
+    <p class="status-line ok" id="up-status" data-i18n="upload.ready"></p>
+    <h3 data-i18n="upload.regions"></h3>
+    <ul class="regions" id="up-regions">
+      <li><span class="tag auto" data-i18n="tag.auto"></span><span class="what">#1 · 192×248 px</span><button class="btn" data-i18n="region.remove"></button></li>
+      <li id="up-manual-row"><span class="tag manual" data-i18n="tag.manual"></span><span class="what">#2 · 174×216 px</span><button class="btn" data-i18n="region.remove"></button></li>
+    </ul>
+  </section>
   <p class="notice" role="note">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
     <span data-i18n-html="notice.upload"></span>
   </p>
-  <p class="fineprint" data-i18n="upload.fine"></p>
 </main>
 
 <script>
@@ -624,7 +712,7 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 const stage = $("#stage");
 const LANGS = ["en", "ko"];
 const LANG_KEY = "lcs.lang";
-const ui = { state: "live", mode: "privacy", tab: "camera", bg: "blur", lang: "en" };
+const ui = { state: "live", mode: "privacy", tab: "camera", bg: "blur", lang: "en", upload: "empty" };
 
 function savedLang() {
   try { const v = localStorage.getItem(LANG_KEY); return LANGS.includes(v) ? v : null; } catch (_) { return null; }
@@ -632,9 +720,10 @@ function savedLang() {
 function saveLang(lang) {
   try { localStorage.setItem(LANG_KEY, lang); } catch (_) { /* storage blocked: choice lasts for this page only */ }
 }
-function t(key) {
+function t(key, params = {}) {
   const dict = window.LCS_I18N[ui.lang] || window.LCS_I18N.en;
-  return dict[key] ?? window.LCS_I18N.en[key] ?? key;
+  const text = dict[key] ?? window.LCS_I18N.en[key] ?? key;
+  return text.replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? ""));
 }
 function applyI18n() {
   document.documentElement.lang = ui.lang;
@@ -704,11 +793,33 @@ function render() {
   $$("[data-act=snap]").forEach((b) => (b.disabled = !streaming || ui.state === "noface"));
   $("#meta").textContent = t(streaming ? "ctrl.meta.on" : "ctrl.meta.off");
   placeFace();
+  renderUpload();
+}
+
+// Upload states: empty | detecting | editor | draw | error
+function renderUpload() {
+  const u = ui.upload;
+  $("#up-empty").hidden = u !== "empty";
+  $("#up-error").hidden = u !== "error";
+  $("#up-detecting").hidden = u !== "detecting";
+  $("#up-editor").hidden = !["editor", "draw"].includes(u);
+  const drawing = u === "draw";
+  $("#up-draw").setAttribute("aria-pressed", String(drawing));
+  $("#up-hint").hidden = !drawing;
+  $("#up-photo").classList.toggle("drawing", drawing);
+  // While drawing, the second (manual) region is still a draft and not blurred yet.
+  $("#up-manual").hidden = drawing;
+  $("#up-manual-row").hidden = drawing;
+  $("#up-draft").hidden = !drawing;
+  $("#up-count").textContent = t("upload.count", { auto: 1, manual: drawing ? 0 : 1 });
+  $("#up-status").textContent = t(drawing ? "upload.blurring" : "upload.ready");
+  $("#up-download").setAttribute("aria-disabled", String(drawing));
 }
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
-  for (const k of ["state", "mode", "tab", "bg"]) if (p.get(k)) ui[k] = p.get(k);
+  for (const k of ["state", "mode", "bg", "upload"]) if (p.get(k)) ui[k] = p.get(k);
+  ui.tab = p.get("tab") || (p.get("upload") ? "upload" : "camera");
   $("#t-blur").checked = p.get("blur") !== "off";
   $$("[data-later]").forEach((n) => (n.hidden = p.get("later") === "off"));
   // A hash language previews without saving; otherwise use the saved choice.
@@ -728,6 +839,7 @@ $$("#p-privacy .pills .pill, .swatches .swatch:not(.add)").forEach((b) =>
     b.parentElement.querySelectorAll("[aria-pressed]").forEach((x) => x.setAttribute("aria-pressed", "false"));
     b.setAttribute("aria-pressed", "true");
   }));
+$("#up-draw").addEventListener("click", () => { ui.upload = ui.upload === "draw" ? "editor" : "draw"; render(); });
 window.addEventListener("resize", placeFace);
 window.addEventListener("hashchange", () => { readHash(); render(); });
 readHash();

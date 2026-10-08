@@ -35,6 +35,35 @@ window.LCS_I18N.en = {
   "prompt.title": "Waiting for camera permission",
   "prompt.body": "Choose “Allow” next to the address bar. If you decline, photo upload keeps working.",
 
+  "prompt.cancel": "Cancel",
+  "prompt.fine": "Some browsers never answer this request. Cancel stops waiting; a stream that arrives later is closed at once.",
+
+  "upload.cta.other": "Choose another photo",
+  "upload.detecting": "Detecting faces…",
+  "upload.count": "Found automatically: {auto} · manual: {manual}",
+  "upload.boxes": "Show boxes",
+  "upload.add": "Add region",
+  "upload.hint": "Drag over a face with your finger or mouse to add a region.",
+  "upload.download": "Download",
+  "upload.ready": "Preview ready. Check it, then download.",
+  "upload.blurring": "Blurring…",
+  "upload.regions": "Regions to blur",
+  "upload.none": "No regions. If a face was missed, add it manually.",
+  "upload.error.title": "This file can’t be processed",
+  "tag.auto": "Auto",
+  "tag.manual": "Manual",
+  "region.remove": "Remove",
+
+  "error.empty_file": "The file is empty.",
+  "error.unsupported_format": "Only JPEG or PNG images are accepted.",
+  "error.file_too_large": "The file must be 10 MB or smaller.",
+  "error.image_too_large": "The image must be at most 25 megapixels and 8000 px on the longest side.",
+  "error.corrupt_image": "The image could not be read. The file may be damaged.",
+  "error.invalid_regions": "Some regions are invalid. Remove them and try again.",
+  "error.too_many_regions": "You can blur at most 100 regions.",
+  "error.network": "Could not reach the server.",
+  "error.unknown": "Something went wrong (HTTP {status}).",
+
   "loading.title": "Getting ready…",
   "loading.s1": "Camera permission granted",
   "loading.s2": "Starting video stream",
@@ -126,6 +155,5 @@ window.LCS_I18N.en = {
 
   "upload.title": "Choose a photo",
   "upload.limits": "JPEG or PNG · 10 MB · up to 25 megapixels",
-  "upload.cta": "Choose file",
-  "upload.fine": "The existing flow (detect → manual regions → preview → download) stays the same; only the theme changes."
+  "upload.cta": "Choose file"
 };

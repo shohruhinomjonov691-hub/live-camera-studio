@@ -27,6 +27,10 @@ iframe { border: 1px solid #262c38; border-radius: 10px; background: #0b0d11; wi
     <button data-v="live">live</button><button data-v="noface">no face</button><button data-v="snapshot">snapshot</button>
     <button data-v="denied">denied</button><button data-v="nocam">no camera</button><button data-v="error">error</button>
   </span>
+  <span class="group" data-key="upload">Upload:
+    <button data-v="">—</button><button data-v="empty">empty</button><button data-v="detecting">detecting</button>
+    <button data-v="editor">editor</button><button data-v="draw">drawing</button><button data-v="error">error</button>
+  </span>
   <span class="group" data-key="blur">Face blur: <button data-v="">on</button><button data-v="off">off</button></span>
   <span class="group" data-key="later">Batch tags: <button data-v="">show</button><button data-v="off">hide</button></span>
   <span class="group" data-key="lang">Lang: <button data-v="">saved</button><button data-v="en">EN</button><button data-v="ko">KO</button></span>
@@ -35,13 +39,13 @@ iframe { border: 1px solid #262c38; border-radius: 10px; background: #0b0d11; wi
 <div class="frame" id="frame"><iframe id="app" title="Live Camera Studio mockup"></iframe></div>
 <script>
 "use strict";
-const opts = { state: "live", blur: "", later: "", lang: "", size: "desktop" };
+const opts = { state: "live", upload: "", blur: "", later: "", lang: "", size: "desktop" };
 function update() {
   document.querySelectorAll(".group").forEach((g) =>
     g.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(opts[g.dataset.key] === b.dataset.v))));
   document.getElementById("frame").className = "frame " + opts.size;
   const p = new URLSearchParams();
-  for (const k of ["state", "blur", "later", "lang"]) if (opts[k]) p.set(k, opts[k]);
+  for (const k of ["state", "upload", "blur", "later", "lang"]) if (opts[k]) p.set(k, opts[k]);
   document.getElementById("app").src = "mockup.html#" + p.toString();
 }
 document.querySelectorAll(".group").forEach((g) =>

@@ -29,12 +29,25 @@ def test_parse_regions_valid():
         json.dumps([{"y": 1, "w": 3, "h": 5}]),
         json.dumps([{"x": 1, "y": 1, "w": 3, "h": 5, "source": "other"}]),
         '[{"x": NaN, "y": 1, "w": 3, "h": 5}]',
+        '[{"x": Infinity, "y": 1, "w": 3, "h": 5}]',
+        '[{"x": 1e400, "y": 1, "w": 3, "h": 5}]',
+        '[{"x": 1, "y": 1, "w": 1' + "0" * 400 + ', "h": 5}]',  # integer too large for float
+        json.dumps([{"x": -1, "y": 1, "w": 3, "h": 5}]),
+        json.dumps([{"x": 1, "y": config.MAX_SIDE + 1, "w": 3, "h": 5}]),
+        json.dumps([{"x": 1, "y": 1, "w": config.MAX_SIDE + 0.5, "h": 5}]),
+        json.dumps([{"x": 1, "y": 1, "w": 0.4, "h": 5}]),
     ],
 )
 def test_parse_regions_rejects_invalid(raw):
     with pytest.raises(ImageError) as info:
         parse_regions(raw)
     assert info.value.status_code == 400
+
+
+def test_parse_regions_accepts_bounds():
+    side = config.MAX_SIDE
+    raw = json.dumps([{"x": 0, "y": side, "w": side, "h": 1}])
+    assert parse_regions(raw) == [Region(0, side, side, 1, "manual")]
 
 
 def test_parse_regions_limits_count():
