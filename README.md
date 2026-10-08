@@ -83,6 +83,26 @@ uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 Open http://127.0.0.1:8765. The camera works only on `localhost` or HTTPS. The live detector needs a browser with module workers and WebAssembly SIMD. Only Chrome has been tested so far; Safari before 18 has no canvas filters, so its blur falls back to pixelation only.
 
+## Docker
+
+```bash
+docker compose up -d --build --wait
+```
+
+The image (`python:3.13.16-slim-bookworm`, pinned by digest) contains the app and the vendored MediaPipe files and models; nothing is fetched at runtime. It runs as an unprivileged user with a read-only root filesystem, no capabilities, `no-new-privileges` and a `/health` healthcheck. `compose.yaml` is its own Compose project and publishes the app only on `127.0.0.1:${LCS_PORT:-18765}`.
+
+## Deploying behind an existing Nginx
+
+The camera needs HTTPS, so the app is meant to run behind the host's Nginx (no second proxy):
+
+1. Copy `deploy/nginx/live-camera-studio-proxy.conf` to `/etc/nginx/snippets/`.
+2. Adapt `deploy/nginx/live-camera-studio.conf.example` (domain, certificate paths, port) as its own site; leave other sites untouched.
+3. `nginx -t && systemctl reload nginx`.
+
+Uploaded photos must not be written to disk anywhere, including the proxy. The snippet streams request bodies to the app (`proxy_request_buffering off`), keeps any held body in memory (`client_body_buffer_size` ≥ the 10 MB limit), and streams responses without temp files (`proxy_buffering off`, `proxy_max_temp_file_size 0`). It does not override the app's security headers.
+
+`deploy/smoke/check.sh` (needs Docker) builds the image, puts it behind Nginx with that snippet, sends a ~3.5 MB image to `/api/detect` and `/api/blur`, and fails if Nginx reports buffering to a temporary file. A control route with default-style buffering must report temp files, which proves the check can detect a regression. It also checks that the app container is read-only, non-root, healthy and has no filesystem changes. The check uses HTTP/1.1 to Nginx; HTTP/2 on the real server should be verified the same way (the Nginx error log reports any "buffered to a temporary file").
+
 ## API
 
 | Method | Path | Body | Response |
@@ -103,7 +123,7 @@ node --test tests/js/*.test.mjs
 - Python: invalid/corrupt files, size and pixel limits, EXIF orientation, alpha flattening, region parsing and bounds, error codes, security headers (CSP, `Permissions-Policy`, worker CSP, no inline script/style), vendored files served, blur confined to regions, metadata stripping, and that a >1 MB upload opens no file for writing and adds nothing to the temp or project directories.
 - JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use, glasses layer order and failures, snapshot source/mirror/disabled states, bitmap cleanup, messages from a replaced worker), the detector worker with fake MediaPipe tasks (detector and landmarker created one at a time), the snapshot/pagehide flow of the page shell, and EN/KO coverage plus the saved language choice.
 
-These tests use synthetic images and fakes. **They do not measure face-detection quality.**
+These tests use synthetic images and fakes. **They do not measure face-detection quality.** `tests/test_deploy.py` guards the deployment files statically; `deploy/smoke/check.sh` is the behavioural check.
 
 ### Live camera measurements
 
@@ -148,8 +168,15 @@ app/static/app.js             Photo upload flow
 app/static/i18n.js, i18n/     EN/KO strings and the saved language choice
 app/static/vendor/mediapipe/  Vendored MediaPipe package files, model, LICENSE, SOURCES.md
 design/live-camera-studio/    Design mockup and technical plan
+Dockerfile, compose.yaml      Production image and its own Compose project (loopback port only)
+deploy/nginx/                 Proxy snippet and example site for an existing Nginx
+deploy/smoke/                 Local check: app behind Nginx, no image bytes on the proxy's disk
 tests/                        pytest suite; tests/js/ Node tests
 ```
+
+## License
+
+The project code is licensed under the [MIT License](LICENSE). Files under `app/static/vendor/mediapipe/` (the MediaPipe Tasks Vision package and the BlazeFace, Face Landmarker and Selfie Segmenter models) keep their Apache License 2.0; see that folder's `LICENSE` and `SOURCES.md`.
 
 ## Author
 

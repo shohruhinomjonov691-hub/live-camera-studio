@@ -1,0 +1,23 @@
+# Local smoke test: the production app container behind Nginx with the production proxy snippet.
+# Run deploy/smoke/check.sh. Uses its own project name, ports and container names.
+name: live-camera-studio-smoke
+
+services:
+  app:
+    extends:
+      file: ../../compose.yaml
+      service: app
+    container_name: live-camera-studio-smoke-app
+    ports: !reset []
+
+  nginx:
+    image: nginx:1.28-alpine
+    container_name: live-camera-studio-smoke-nginx
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18080:80"
+    volumes:
+      - ../nginx/live-camera-studio-proxy.conf:/etc/nginx/snippets/live-camera-studio-proxy.conf:ro
+      - ./nginx-smoke.conf:/etc/nginx/conf.d/default.conf:ro

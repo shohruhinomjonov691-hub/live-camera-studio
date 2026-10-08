@@ -1,188 +1,153 @@
-# Live Camera Studio — dizayn va texnik reja
+# Live Camera Studio — design and technical plan
 
-- Sana: 2026-10-08 (Asia/Seoul). Rejim: BUILD (1-batch amalga oshirildi, `develop` branch). Bajaruvchi: Claude Code. Reviewer: Codex.
-- Asos: `main` @ `ad4c1d5` “feat: Face Blur MVP” (kutilgan commit bilan mos edi).
-- Manba: foydalanuvchi topshiriqlari (2026-10-08) va loyiha koordinatsiyasi uchun alohida (xususiy) task/handoff yozuvlari.
-- 1-batch: kamera + jonli yuz blur, EN/KO, error code’lar, MediaPipe vendor — amalga oshirildi (natija pastda). Push va deploy qilinmadi.
+This document records the design decisions behind the live camera features: what the app guarantees, what it
+deliberately does not, and how it was verified. The user-facing summary is in the top-level `README.md`.
 
-## Foydalanuvchi qarorlari (2026-10-08)
+## Decisions
 
-| Mavzu | Qaror |
+| Topic | Decision |
 | --- | --- |
-| Nomi | **Live Camera Studio** |
-| Til | **English default + Korean** switcher. Matnlar alohida translation fayllarida; tanlov refresh’dan keyin saqlanadi |
-| Yuz effekti | Faqat **ko‘zoynak** |
-| Processing | Jonli kadrlar **brauzerda** ishlanadi |
-| Kutubxona | **MediaPipe Tasks Vision**; rasmiy paket/WASM/model fayllari versiyasi qotirilgan holda lokal vendor qilinadi |
-| Privacy qoidasi | Yuz blur yoqilganda detector tayyor bo‘lmasa, xato bersa yoki yuz topmasa — **butun kadr yashiriladi**. Bu “kafolatlangan anonimlashtirish” deb nomlanmaydi |
-| Debug panel | Review boshqaruvlari production UI’ga kirmaydi |
-| Implementation | Mavjud MVP va shu reja Codex review’dan o‘tmaguncha boshlanmaydi |
+| Name | Live Camera Studio (the photo-upload flow keeps the original Face Blur behaviour) |
+| UI language | English by default, Korean switcher; strings live in separate translation files; the choice is saved in the browser |
+| Live processing | In the browser only. Camera frames never reach the server |
+| Library | MediaPipe Tasks Vision, vendored with pinned versions (no CDN) |
+| Face effect | Glasses only |
+| Background | Off, blur, or a user-chosen image — one at a time |
+| Privacy rule | While face blur is on, the whole frame is hidden whenever the detector is loading, has failed, is too slow or finds no face. This is described as reducing exposure, never as guaranteed anonymization |
 
-## Fayllar
+## Files in this folder
 
-| Fayl | Vazifa |
+| File | Purpose |
 | --- | --- |
-| `mockup.html` | Production ko‘rinishidagi maket: debug panelsiz, EN/KO switcher bilan |
-| `i18n/en.js`, `i18n/ko.js` | Barcha UI matnlari (bir xil kalitlar). `file://`da ishlashi uchun JSON emas, `window.LCS_I18N` ga yozadigan JS |
-| `review.html` | **Faqat dizayn review**: holat, til, blur, desktop/390 px tanlovi; maketni iframe’da ochadi. App’ga ko‘chirilmaydi |
-| `screenshots/` | Generated; commit qilinmaydi (`.gitignore`) |
-
-### Ochish
+| `mockup.html` | Static design mockup (dark theme, desktop/mobile, EN/KO). Its preview is an SVG illustration, not detection |
+| `i18n/en.js`, `i18n/ko.js` | Mockup strings |
+| `review.html` | Design-review helper that switches mockup states in an iframe. Not part of the app |
 
 ```bash
 open design/live-camera-studio/review.html
 ```
 
-Faqat maketning o‘zi: `open design/live-camera-studio/mockup.html`. Hash parametrlari: `state=idle|prompt|loading|live|noface|snapshot|denied|nocam|error`, `mode=privacy|effects|background`, `tab=camera|upload`, `bg=none|blur|image`, `upload=empty|detecting|editor|draw|error`, `blur=off`, `later=off`, `lang=en|ko` (hash’dagi til faqat ko‘rish uchun, saqlanmaydi).
+Mockup hash parameters: `state=idle|prompt|loading|live|noface|snapshot|denied|nocam|error`,
+`mode=privacy|effects|background`, `tab=camera|upload`, `bg=none|blur|image`,
+`upload=empty|detecting|editor|draw|error`, `blur=off`, `later=off`, `lang=en|ko`.
 
-**Preview soxta** — SVG illyustratsiya. Kadrda “Sample frame · not detection” belgisi va “Face · sample” yorlig‘i turadi; bu belgi ham faqat maketga tegishli.
+The mockup uses inline scripts and styles; it is not copied into the app, whose CSP forbids them.
 
-## Dizayn
+## Visual design
 
-- To‘q tema; bitta accent `#8aa6ff`; ogohlantirish sariq, xato qizil, “yuz topildi” yashil.
-- Kontrast: yordamchi matn `--faint #95a0b1` (surface ustida 6.6:1), ikkinchi darajali `--muted #b6bfcc` (9.4:1); yordamchi matnlar kamida 13 px. Koreyscha uchun `word-break: keep-all` va `Apple SD Gothic Neo` / `Noto Sans KR` fallback.
-- Desktop: 16:9 preview + control bar, o‘ngda 368 px panel (Privacy / Effects / Background) va sessiya snapshotlari.
-- Mobil (≤900 px): preview 4:5, `max-height: 64svh` — panel birinchi ekranda ko‘rinib turadi; boshqaruv preview ustida (kamera o‘chirish · 60 px shutter · old/orqa kamera, 44 px tegish maydoni); FPS chip va privacy pill yashiriladi.
-- Qatlam tartibi: kamera → fon → ko‘zoynak → **yuz blur doim eng ustida**. Bbox snapshotga chizilmaydi.
-- Mavjud ogohlantirish (“Automatic detection does not guarantee that every face is found”) ikkala bo‘limda doimiy.
+- Dark theme, one accent colour (`#8aa6ff`); warnings amber, errors red, "face found" green.
+- Contrast: helper text `#95a0b1` (6.6:1 on the surface colour), secondary text `#b6bfcc` (9.4:1); helper text is
+  at least 13 px. Korean uses `word-break: keep-all` with Apple SD Gothic Neo / Noto Sans KR fallbacks.
+- Desktop: 16:9 preview with a control bar, a 368 px settings panel (Privacy / Effects / Background) and session
+  snapshots.
+- Mobile (≤ 900 px): 4:5 preview capped at 64svh so the panel starts on the first screen; controls float over the
+  preview (camera off, 60 px shutter, front/back camera; 44 px touch targets).
+- The warning "Automatic detection does not guarantee that every face is found" is always visible in both sections.
 
-### Holatlar
+### Camera states
 
-| Holat | Trigger (implementation) | UI |
+| State | Trigger | UI |
 | --- | --- | --- |
-| Camera off | boshlang‘ich / foydalanuvchi o‘chirdi | “Turn on camera”, localhost/HTTPS eslatmasi |
-| Permission | `getUserMedia` kutilmoqda | brauzer so‘roviga yo‘llovchi strelka |
-| Loading | oqim va model tayyorlanmoqda | 3 qadamli progress; **kadr yashirin** |
-| Live | ≥1 yuz | LIVE, yuzlar soni, FPS (“not measured” agar o‘lchanmagan) |
-| No face, blur yoqilgan | 0 yuz | **butun kadr yashirin** (“Preview hidden”), HUD va boshqaruv ko‘rinadi, snapshot o‘chirilgan |
-| No face, blur o‘chiq | 0 yuz | sariq banner, snapshot o‘chirilgan |
-| Snapshot | shutter | flash + “Snapshot ready · Download” |
-| Denied | `NotAllowedError` | 3 qadamli yo‘riqnoma, Try again, Photo upload |
+| Camera off | initial, or the user stopped it | "Turn on camera", note that the camera needs localhost or HTTPS |
+| Permission | `getUserMedia` pending | Pointer to the browser prompt, Cancel |
+| Loading | stream and model starting | Progress; the frame is hidden |
+| Live | a processed frame is on screen | LIVE, face count, FPS and latency |
+| Hidden | no face with blur on, timeout, background not ready or failed, settings just changed | "Preview hidden" with the reason; HUD and controls stay usable; snapshots disabled |
+| Denied | `NotAllowedError` | How to allow the camera, Try again, Photo upload |
 | No camera / busy | `NotFoundError`, `NotReadableError` | Check again, Photo upload |
-| Error | detector xatosi | **kadr yashirin**, snapshot to‘xtatilgan, Restart detector |
+| Ended | `track.ended` | Camera stopped message |
+| Error | detector failure | Frame hidden, Restart detector |
 
-`window.isSecureContext` yolg‘on yoki `navigator.mediaDevices` yo‘q bo‘lsa — “Camera off” holatidagi localhost/HTTPS matni xato sifatida ko‘rsatiladi.
+## Fail-closed frame pipeline
 
-## Privacy pipeline — fail-closed (implementation talabi; Codex review P1 bo‘yicha qayta yozildi)
+1. **Capture.** One `ImageBitmap` `F` is taken from the (never displayed) `<video>` per new video frame
+   (`requestVideoFrameCallback`, falling back to `requestAnimationFrame`). Only one frame is in the pipeline at a
+   time; it carries the camera session and a frame id.
+2. **Detect.** A copy of `F` is transferred to a module worker, which runs face detection — and, only when the
+   matching feature is on, face landmarks and selfie segmentation — on that same bitmap.
+3. **Accept.** A result is used only if its session and frame id match the frame in the pipeline. Anything else
+   (late results, results after Stop, results from a replaced worker) is ignored.
+4. **Compose.** On an off-screen buffer: background (blurred frame or the chosen image) → the person cut out by the
+   mask of `F` → glasses → face blur, which is always the last layer. The finished buffer is copied to the visible
+   canvas once. A new video frame is never drawn with older boxes, landmarks or masks.
+5. **Pending.** While a result is pending, the screen keeps the last fully processed frame. After 1000 ms, if face
+   blur or a background is on, the canvases are cleared and the preview is hidden; the late result is ignored and
+   the next frame recovers.
+6. **Hide.** With face blur on and no face, on any detector or render error, or with a background on but no valid
+   mask for this frame, every canvas is cleared and nothing of the frame is shown.
+7. **Settings changes.** Turning blur on, toggling glasses, or changing any background setting drops the frame in
+   flight; turning blur on or changing the background also wipes the canvases at once, so only a frame processed
+   with the new settings reappears.
+8. **Snapshots** copy the visible processed canvas (never the raw video), flipped like the preview when Mirror is
+   on, without boxes or HUD, encoded with `canvas.toBlob("image/png")` (only `IHDR`/`IDAT`/`IEND` chunks). They are
+   disabled unless a processed frame is on screen.
 
-Yuz blur yoqilganda (privacy rejimi) **blur va detection aynan bitta captured frame’ga tegishli**. Xom `<video>` hech qachon ko‘rinmaydi (`display: none`; faqat manba sifatida).
+### Glasses and face blur
 
-1. **Capture.** Har tick’da `createImageBitmap(video)` bilan kadr `F` olinadi va unga `{camSession, frameId}` biriktiriladi. Bir vaqtda faqat bitta kadr ishlanmoqda bo‘ladi; navbatdagi kadr oldingisi tugaguncha olinmaydi (eski kadrlar to‘planmaydi).
-2. **Detect.** `F` detector’ga beriladi (worker, pastda). Natija `R(F)` kelganda `camSession` va `frameId` joriy bo‘lmasa — tashlanadi, `F.close()`.
-3. **Compose.** `R(F)` ≥1 yuz bo‘lsa: off-screen buffer’ga **aynan `F`** chiziladi, `R(F)` bbox’lari (25% padding — BlazeFace bbox’i Haar’nikidan tor) shu bufer ichida blur qilinadi; tayyor bufer ko‘rinadigan canvas’ga bir martada ko‘chiriladi. Yangi video kadrini eski bbox bilan chizish yo‘q — “hold” ham yo‘q.
-4. **Pending.** Natija kutilayotganda ko‘rinadigan canvas oxirgi **to‘liq ishlangan** kadrda muzlaydi (ko‘rinadigan FPS = detection tezligi). Pending 1000 ms’dan oshsa — canvas tozalanadi va “Preview hidden” ko‘rsatiladi.
-5. **0 yuz / xato / tayyor emas.** Ko‘rinadigan canvas va off-screen bufer darhol `clearRect` bilan tozalanadi (oldingi ishlangan kadr ham qolmaydi), “Preview hidden” overlay, snapshot o‘chiriladi. Faqat keyingi muvaffaqiyatli `R(F)` bilan qayta ko‘rinadi.
-6. **Snapshot.** Faqat oxirgi compose qilingan bufer’dan (`F` + `R(F)` blur), u ≥1 yuzli, joriy `camSession`ga tegishli va pending timeout o‘tmagan bo‘lsa. Bbox alohida overlay canvas’da — snapshotga kirmaydi. Snapshot hech qachon xom `video`dan olinmaydi.
-7. **Effektlar/fon (2–3-batch).** Landmarker/segmenter ham aynan `F` ustida ishlaydi; compose barcha natijalar kelgach bir marta. Yuz blur doim oxirgi qatlam.
-8. **Yuz blur o‘chiq bo‘lsa** (foydalanuvchi tanlovi, faqat effekt rejimi): xom kadr chizilishi mumkin; HUD “Face blur off” deb ko‘rsatadi.
+- Glasses and face blur are exclusive: glasses on turns blur off (the UI then says faces are visible); turning blur
+  on, or opening Privacy, turns blur on and glasses off; turning glasses off yourself does not re-enable blur.
+- If the landmarker fails to load, returns an error, or drawing fails, the effect fails closed: glasses off, blur on,
+  and a message stays visible until dismissed or retried.
 
-Matnlarda “reduces exposure, not guaranteed anonymization” saqlanadi. Ochiq savol “ushlab turish oynasi” yopildi: **hold yo‘q**.
+### Background
 
-## Kamera lifecycle
+- The mask is used only if it was requested for that frame and is complete with the frame's aspect ratio (±3%).
+  While the segmenter loads, after a load or runtime error, or with an invalid mask, the preview stays hidden with
+  a message and Retry (which recreates the segmenter). Turning the background off also recovers.
+- Background images (JPEG, PNG, WebP; ≤ 10 MB; ≤ 25 MP and ≤ 8000 px per side) are decoded in the browser, kept at
+  most 1920 px, never uploaded, and released on Remove and when the page closes. A newer choice discards an older
+  decode still in progress.
+- The image is drawn flipped when the preview is mirrored, so the preview and a mirrored snapshot show it the right
+  way round.
 
-| Hodisa | Talab |
+## Camera lifecycle
+
+| Event | Behaviour |
 | --- | --- |
-| Start | `const id = ++camSession`; holat `prompt`; `await getUserMedia(...)`. Qaytganda `id !== camSession` bo‘lsa — kelgan stream’ning barcha track’lari darhol `stop()`, natija ishlatilmaydi |
-| Permission javobsiz qoladi | MDN bo‘yicha so‘rov hech qachon yakunlanmasligi mumkin: “prompt” holatida **Cancel** tugmasi (= Stop). Kech kelgan stream yuqoridagi qoida bo‘yicha yopiladi |
-| Stop (tugma, tab “Photo upload”, `pagehide`) | `++camSession`; `cancelAnimationFrame` / `video.cancelVideoFrameCallback`; worker’dagi navbat bekor (natijalar session bilan tashlanadi); barcha track `stop()`; `video.srcObject = null`; ko‘rinadigan va off-screen canvas `clearRect`; ochiq `ImageBitmap`lar `close()`; holat `idle` |
-| `visibilitychange` → hidden | Stop bilan bir xil (kamera bo‘shatiladi). Qaytganda avtomatik qayta yoqilmaydi — “Camera off”, bitta bosish bilan qayta yoqiladi |
-| Kamera almashtirish (old/orqa, `deviceId`) | Avval to‘liq Stop, keyin yangi Start (yangi `camSession`) — ikki stream bir vaqtda ochiq bo‘lmaydi |
-| `track.onended` / `mute` uzoq davom etsa | Stop + “No camera / busy” yoki “Error” holati |
-| `devicechange` | Qurilmalar ro‘yxati yangilanadi; joriy track tirik bo‘lsa davom etadi |
-| Worker xatosi / `onerror` | Error holati: canvas tozalanadi, snapshot o‘chadi, “Restart detector” |
-| Snapshot blob’lari | Ro‘yxatdan o‘chirilganda va `pagehide`da `revokeObjectURL` |
+| Start | New session; a stream that arrives after Stop/Cancel is stopped at once |
+| Permission never answered | Cancel stops waiting |
+| Stop, Photo upload tab, `pagehide`, page hidden | Cancel the frame callback, drop the frame in flight (bitmaps closed), stop all tracks, `srcObject = null`, clear canvases |
+| Camera switch | Full Stop, then Start |
+| `track.ended` | Stop and show "camera stopped" |
+| Worker error | Error state, canvases cleared; Restart detector creates a new worker; messages from the old worker are ignored |
+| Snapshot URLs | Revoked on remove and `pagehide`; a snapshot still being encoded at `pagehide` is discarded |
 
-Testlar (1-batch): fake `getUserMedia` (kechiktirilgan promise) bilan — Stop’dan keyin kelgan stream’ning track’lari to‘xtatilgani; eski `camSession` natijasi chizilmasligi; 0 yuz/xatoda canvas tozalangani; snapshot faqat ishlangan bufer’dan olingani.
+## Worker and performance
 
-## MediaPipe ishlash byudjeti
+- All MediaPipe tasks are created one at a time: each creation consumes and clears `self.ModuleFactory`, and in a
+  module worker the cached loader module does not run again, so the worker restores the factory before each task.
+- Detection runs on the CPU (XNNPACK) in a module worker, so the UI thread is not blocked. No main-thread fallback
+  was needed.
+- Measured with Chrome's fake camera fed with a still photo (Apple M2, headless Chrome 154, 1280×720, 30 fps
+  source): detection only p95 ~9 ms end to end; with glasses p95 ~21 ms; with background blur or image p95 ~18 ms;
+  30 FPS (28 with an image). These numbers say nothing about detection or segmentation quality.
 
-- **Worker birinchi tanlov:** detection dedicated module worker’da (`worker-src 'self'`), kadr `ImageBitmap` sifatida transfer qilinadi. MediaPipe’ning worker ichida, production CSP ostida (bundle + WASM + model, `'wasm-unsafe-eval'`) ishlashi 1-batchning **birinchi qadami (spike)** sifatida tekshiriladi — hali tasdiqlanmagan.
-- **Fallback — main thread, o‘lchangan byudjet bilan:** detection kirishi 320 px gacha kichraytiriladi; `detectForVideo` p95 ≤ 16 ms bo‘lishi va 50 ms’dan uzun task bo‘lmasligi kerak (`performance.now` + `PerformanceObserver('longtask')`). Byudjet buzilsa detection tezligi pasaytiriladi; ko‘rinadigan kadr baribir faqat ishlangan kadr (fail-closed o‘zgarmaydi).
-- Qayd etiladi: qurilma/brauzer, worker yoki main thread, p50/p95 latency, ko‘rinadigan FPS. O‘lchanmagan bo‘lsa README’da ochiq yoziladi.
+## Security headers
 
-## Reuse va dependency
+- `Content-Security-Policy`: same-origin scripts, styles, workers and connections, plus `'wasm-unsafe-eval'` for the
+  vendored WebAssembly; no inline scripts or styles; no CDN.
+- `Permissions-Policy: camera=(self), microphone=(), geolocation=()`.
+- The camera code makes no network requests.
 
-| Ehtiyoj | Mavjud kod | Reja |
-| --- | --- | --- |
-| Jonli yuz bbox | `app/detector.py` (Haar, server) — brauzerda ishlamaydi | MediaPipe **Face Detector** |
-| Yuz blur | `app/blur.py::_obscure` (pixelate + Gauss), `AUTO_PADDING` 15% | Algoritm Canvas 2D’da qayta yoziladi; jonli rejimda padding 25% |
-| Ko‘zoynak | Yo‘q | MediaPipe **Face Landmarker** |
-| Fon | Yo‘q | MediaPipe **Image Segmenter** (selfie segmenter) |
-| Snapshot | `encode_image` metadata’siz | `canvas.toBlob("image/png")`, serverga yuborilmaydi |
-| Upload / manual blur | `app.js`, `/api/detect`, `/api/blur` | Mantiq o‘zgarmaydi; matnlar EN/KO translation fayllariga ko‘chadi |
+## Backend errors
 
-### Vendor qilinadigan fayllar (rejalashtirilgan; hali yuklab olinmagan)
+`ImageError(status, code, message)` returns `{"code", "detail"}`. Codes: `empty_file`, `unsupported_format`,
+`file_too_large`, `image_too_large`, `corrupt_image`, `invalid_regions`, `too_many_regions`. The UI translates the
+code; `detail` is English and only for debugging.
 
-2026-10-08 da npm registry va Google Cloud Storage’dan tekshirildi:
+## Vendored files
 
-| Artefakt | Manba | Versiya | Litsenziya | Hajm |
-| --- | --- | --- | --- | --- |
-| `@mediapipe/tasks-vision` (JS bundle + `wasm/`) | `https://registry.npmjs.org/@mediapipe/tasks-vision/-/tasks-vision-1.0.1.tgz` | **1.0.1** (2026-07-31). Integrity `sha512-rvRE2FmAZ6ZxKSw7wq+e+jQDpN3t1B/tD2mJz9SmAzb1msoDkd4dMoE4wAh8Z30Um0PQwLiHr9QtomhmXk3aUQ==` | Apache-2.0 (npm metadata) | paket ~36.8 MB unpacked; faqat kerakli bundle + `wasm/` olinadi |
-| `blaze_face_short_range.tflite` | `https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/` | `float16/1` | model card’da tekshiriladi (kutilgan: Apache-2.0) | 229 746 B |
-| `face_landmarker.task` (2-batch) | `…/face_landmarker/face_landmarker/float16/1/` | `float16/1` | model card’da tekshiriladi | 3 758 596 B |
-| `selfie_segmenter.tflite` (3-batch) | `…/image_segmenter/selfie_segmenter/float16/1/` | `float16/1` | model card’da tekshiriladi | 249 537 B |
+Sources, exact versions, SHA-256 hashes and licenses are recorded in `app/static/vendor/mediapipe/SOURCES.md` and
+checked by a test. `@mediapipe/tasks-vision` 1.0.1 (chosen over the then two-day-old 1.1.0) and the BlazeFace, Face
+Landmarker and Selfie Segmenter models are Apache-2.0 per the package metadata and the official model cards.
 
-- `1.1.0` (2026-10-06) eng yangi, lekin 2 kunlik — supply-chain ehtiyoti uchun 2 oydan beri barqaror `1.0.1` tanlandi.
-- Joylashuv: `app/static/vendor/mediapipe/tasks-vision-1.0.1/` va `app/static/vendor/mediapipe/models/`; yoniga `SOURCES.md` (URL, versiya, sha256, litsenziya, yuklab olingan sana) va `LICENSE`.
-- Har batchda faqat o‘sha batchga kerak model yuklanadi.
+## Limitations and open items
 
-### Xavfsizlik headerlari va CSP (1-batch)
-
-- CSP: `script-src 'self' 'wasm-unsafe-eval'`; `worker-src 'self'` (blob kerak bo‘lsa spike natijasi bilan asoslanadi). `style-src 'self'` o‘zgarmaydi; CDN yo‘q.
-- **Maket kodi production’ga bevosita ko‘chirilmaydi:** `mockup.html`dagi inline `<script>`, `<style>` va `style="..."` atributlari hozirgi CSP’da bloklanadi. Production’da: tashqi `.css`/`.js` fayllar, pozitsiyalar JS’dan CSSOM (`el.style.left = ...`) orqali, fon swatch’lari CSS klasslar bilan. Tarjimadagi `<b>`/`<strong>` uchun `innerHTML` ishlatilmaydi — matn qismlarga bo‘linadi yoki DOM tugunlari bilan quriladi.
-- `Permissions-Policy: camera=(self)`.
-- Kadr uchun `fetch`/XHR yo‘q (network kuzatuvi bilan tekshiriladi).
-
-### Backend xatolari — barqaror error code (1-batch)
-
-Hozir `ImageError(status, message)` o‘zbekcha matn qaytaradi. Reja:
-
-- `ImageError(status, code, message)`; javob `{"code": "...", "detail": "..."}`. `detail` faqat log/debug uchun inglizcha; UI hech qachon `detail`ni ko‘rsatmaydi.
-- Kodlar: `empty_file` (400), `unsupported_format` (415), `file_too_large` (413), `image_too_large` (413 — megapiksel/tomon), `corrupt_image` (422), `invalid_regions` (400 — JSON, tur, chegara, jumladan katta koordinatalar), `too_many_regions` (400).
-- Client: `t("error." + code)`; noma’lum kod → `error.unknown` (HTTP status bilan); tarmoq xatosi → `error.network`. Kalitlar `i18n/en.js` va `ko.js`da allaqachon bor.
-- Testlar har bir xato yo‘li uchun `code`ni tekshiradi; mavjud status testlari saqlanadi.
-
-## Implementation batchlari
-
-Commitlar `fix:` prefiksi bilan. Boshlanish sharti: Face Blur MVP va shu reja Codex review’dan o‘tgan.
-
-0. **Review tuzatishlari (bajarildi, `cec7488`, `ff51908`).** Upload async poygasi: har tanlangan fayl yangi `session` ochadi; detect/blur natijalari session va `blurSeq` bilan tekshiriladi, eski javoblar tashlanadi, yangi fayl tanlanganda eski preview/natija darhol tozalanadi. `X-Regions` koordinatalari `0 ≤ x,y ≤ 8000`, `1 ≤ w,h ≤ 8000`, NaN/inf/juda katta butun son → 400 (avval 500). Regression testlar: `tests/js/upload_race.test.mjs` (`node --test`), `tests/test_blur.py`, `tests/test_api.py`.
-1. **Kamera + jonli yuz blur.** (a) Spike: MediaPipe worker + CSP. (b) Vendor `tasks-vision` 1.0.1 + BlazeFace (`SOURCES.md`). (c) i18n infratuzilmasi (`app/static/i18n/`), mavjud upload UI va backend error code’lari EN/KO. (d) To‘q tema, tablar. (e) `camera.js`: lifecycle jadvali, fail-closed pipeline. (f) CSP/`Permissions-Policy` testlari. (g) Mavjud testlar + yangi lifecycle/pipeline testlari; desktop/mobil brauzer tekshiruvi; byudjet o‘lchovi; README.
-2. **Ko‘zoynak + snapshot.** Face Landmarker aynan `F` ustida; ko‘z nuqtalari bo‘yicha joylash/burish; kompozit snapshot PNG, sessiya ro‘yxati.
-3. **Fon blur / fon rasmi.** Image Segmenter aynan `F` ustida; 4 ichki fon + foydalanuvchi rasmi (faqat brauzer xotirasida); chegara sifati va byudjet ta’siri o‘lchanadi.
-
-## 1-batch natijasi (2026-10-08, `develop`)
-
-- **Spike muvaffaqiyatli:** MediaPipe Face Detector module worker’da, production CSP (`script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'`) ostida ishladi; CSP buzilishi yo‘q. Bundle module worker’da `importScripts` o‘rniga `import()` ishlatadi, shuning uchun `forVisionTasks(path, true)` bilan `wasm_module` varianti vendor qilindi. Main-thread fallback kerak bo‘lmadi va qo‘shilmadi.
-- Vendor: `app/static/vendor/mediapipe/` (`SOURCES.md`: manba, versiya, SHA-256, litsenziya). Model litsenziyasi model card’dan tasdiqlandi (Apache 2.0). Landmarker/segmenter qo‘shilmadi.
-- Pipeline: bitta `ImageBitmap` olinadi, nusxasi worker’ga transfer qilinadi, blur aynan shu kadrga; `requestVideoFrameCallback` (bo‘lmasa `requestAnimationFrame`) — faqat yangi video kadrda; pending 1000 ms; 0 yuz/xato/timeout’da canvas tozalanadi; xom `<video>` ko‘rinmaydi.
-- Lifecycle: `camSession`, kech stream yopiladi, Cancel, Stop/`visibilitychange`/`pagehide`/tab almashuvi/`track.ended`, kamera almashtirish = Stop + Start, worker xatosi → error.
-- Backend: `{"code", "detail"}`; UI kodni EN/KO’ga tarjima qiladi.
-- O‘lchov (Apple M2, headless Chrome 154, fake kamera = test portreti, real webcam emas): 30 FPS (manba 30 fps), detector p95 8.7 ms, latency p95 9.0 ms.
-- Snapshot, ko‘zoynak, fon — bu batchga kirmadi.
-
-## 2-batch natijasi (2026-10-08, `develop`)
-
-- **Vendor:** `face_landmarker.task` (`float16/1`, SHA-256 `64184e22…`); bundle ichidagi uchala model (BlazeFace, FaceMesh V2, Blendshape V2) model card’lari — Apache 2.0. `SOURCES.md` va hash testi.
-- **Worker:** landmarker faqat ko‘zoynak yoqilganda yuklanadi; detector bilan aynan bitta bitmap’da. MediaPipe har task’dan keyin `self.ModuleFactory`ni tozalaydi, module worker’da loader qayta bajarilmaydi — shuning uchun worker loader’ning default export’ini import qilib, har task oldidan qayta o‘rnatadi (brauzerda tekshirilgan).
-- **Qatlamlar:** kadr → ko‘zoynak (ko‘z burchaklari 33/133/362/263, bosh egilishi bo‘yicha burilish) → yuz blur (oxirgi).
-- **UX qoidasi (foydalanuvchi, 2026-10-08):** ko‘zoynak va blur bir-birini istisno qiladi — Glasses ON → blur OFF; blur ON → glasses OFF; **Privacy rejimi → blur ON + glasses OFF** (view/overlay/buffer darhol tozalanadi, eski kadr tashlanadi, blur qilingan yangi kadr bilan ochiladi); foydalanuvchi Glasses’ni o‘zi OFF qilsa blur avtomatik yoqilmaydi; effekt xatosida Glasses OFF + blur ON (foydalanuvchi qabul qilgan). Blur o‘chiqligida HUD, Privacy va Effects panellarida “yuz ochiq” deb ko‘rsatiladi. Rejim o‘zgarganda in-flight kadr tashlanadi; blur ON’da darhol fail-closed tozalash.
-- **Effekt xatosi:** landmarker yuklanmasa, natijada landmark xatosi bo‘lsa yoki ko‘zoynak chizish xato bersa — fail-closed: ko‘zoynak o‘chadi, blur qayta yoqiladi (chizilayotgan kadr blur qilinadi, aks holda canvas darhol tozalanadi).
-- **Snapshot:** ko‘rinayotgan ishlangan canvas’dan (xom video emas), Mirror yoqilgan bo‘lsa preview kabi aylantiriladi; bbox/HUD yo‘q; PNG chunk’lari faqat `IHDR/IDAT/IEND`. Tugma faqat `live` holatida yoqiq (loading, blur qayta yoqilgandan keyingi pending, hidden, error, stopped — o‘chiq). Kadrlar orasidagi qisqa kutishda ekranda oxirgi ishlangan kadr turadi va u snapshot qilinadi.
-- **O‘lchov (fake kamera, Apple M2, headless Chrome 154):** ko‘zoynak bilan 30 FPS, latency p95 20.6 ms; ko‘zoynaksiz p95 ~9 ms.
-
-## 3-batch natijasi (2026-10-08, `develop`)
-
-- **Vendor:** `selfie_segmenter.tflite` (umumiy 256×256, `float16/1` = `latest`, SHA-256 `191ac952…`), model card “MediaPipe Selfie Segmentation” (2021-05-06) — Apache 2.0. Landscape variant olinmadi (telefonlarda portret kadrlar).
-- **Worker:** `ImageSegmenter` umumiy `oneAtATime` navbatida; detect, landmarks va mask bitta bitmap’da; mask callback ichida 8-bit alpha’ga ko‘chiriladi va tekshiriladi (o‘lcham, 0–1 qiymatlar), buffer transfer qilinadi; xato `maskError`.
-- **Controller:** `background: off | blur | image`; image faqat rasm bo‘lsa; fon blur/glasses tanloviga tegmaydi. Mask faqat shu job so‘ragan bo‘lsa va yaroqli (to‘liq, kadr nisbati ±3%) bo‘lsa ishlatiladi; aks holda kadr yashiriladi (`bgLoading` / `bgError` / `bgInvalid`). Qatlam: fon (kichraytirib-kattalashtirilgan blur yoki cover-crop rasm, mirror’da aylantirilgan) → mask bilan kesilgan odam → glasses yoki face blur. Fon sozlamasi (rejim, blur darajasi, rasm, rasm rejimida mirror) o‘zgarsa job tashlanadi, canvas tozalanadi, snapshot bloklanadi (`bgPending`). Retry, background OFF bilan tiklanish; `dispose()` rasmni yopadi.
-- **Shell:** fon paneli (Off/Blur/Image, blur darajasi, rasm tanlash/olib tashlash, status + Retry), EN/KO. Rasm: tur/hajm tekshiruvi decode’dan oldin, piksel/tomon tekshiruvi decode’dan keyin, ≤1920 px’ga kichraytiriladi, eski decode (generation) tashlanadi, pagehide’da bekor qilinadi va rasm yopiladi.
-- **O‘lchov (fake kamera = statik test portreti, Apple M2, headless Chrome 154):** fon blur 30 FPS, latency p95 17.8 ms; rasm 28 FPS, p95 17.8 ms. Segmentatsiya sifati o‘lchanmagan.
-
-## Ochiq savollar
-
-- Koreyscha tarjima — Claude qoralamasi, ona tilida so‘zlashuvchi tekshiruvi kerak.
-- Real webcam va telefonlarda tekshiruv (FPS, mobil portret kadr, orqa kamera) — hali bajarilmagan.
-- Model litsenziyalari model card’dan tasdiqlanishi kerak; `1.0.1` registry ma’lumotini reviewer mustaqil qayta tasdiqlamagan (tarmoq xatosi).
-- Pending timeout (1000 ms) qiymati o‘lchov asosida aniqlanadi.
-- Face detection evaluation rasmlari hali berilmagan.
+- **No quality evaluation yet.** Face detection (Haar for uploads, BlazeFace live), landmarks and segmentation have
+  not been measured on annotated images; there are no precision/recall numbers. Planned: 20–30 consented or
+  license-checked images with annotated faces; recall at IoU ≥ 0.5 as the primary metric.
+- Real-camera checks so far are informal smoke tests on one Mac. Phones, Safari and Firefox are untested.
+- Korean strings are a draft and need a native-speaker review.
+- Live face boxes are padded by 25% (a heuristic for BlazeFace boxes, not yet validated on real faces).
+- Segmentation edges (hair, hands), motion and several people at different distances are known weak spots of the
+  selfie model.

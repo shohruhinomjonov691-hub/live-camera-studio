@@ -1,0 +1,34 @@
+# Example server block for the EXISTING Nginx on the host (not installed by this repo).
+# 1. Copy deploy/nginx/live-camera-studio-proxy.conf to /etc/nginx/snippets/.
+# 2. Adapt this file (domain, certificate paths) and add it as its own site; do not edit other apps' sites.
+# 3. nginx -t && systemctl reload nginx
+# The app runs from compose.yaml on 127.0.0.1:${LCS_PORT:-18765}. HTTPS is required: browsers only allow the
+# camera on secure pages.
+
+upstream live_camera_studio {
+    server 127.0.0.1:18765;
+    keepalive 8;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name camera.example.com;           # TODO: real (sub)domain
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;                                 # Nginx >= 1.25.1; older: "listen 443 ssl http2;"
+    server_name camera.example.com;           # TODO: real (sub)domain
+
+    ssl_certificate     /etc/letsencrypt/live/camera.example.com/fullchain.pem;   # TODO
+    ssl_certificate_key /etc/letsencrypt/live/camera.example.com/privkey.pem;     # TODO
+
+    # Request lines only (no bodies, no query strings are used by the app); no image data is logged.
+    access_log /var/log/nginx/live-camera-studio.access.log;
+    error_log  /var/log/nginx/live-camera-studio.error.log warn;
+
+    include /etc/nginx/snippets/live-camera-studio-proxy.conf;
+}

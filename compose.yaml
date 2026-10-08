@@ -1,0 +1,28 @@
+# Live Camera Studio — its own Compose project, separate from any other app on the server.
+# The app listens only on the host's loopback; the existing Nginx terminates HTTPS and proxies to it.
+name: live-camera-studio
+
+services:
+  app:
+    build: .
+    image: live-camera-studio:local
+    container_name: live-camera-studio
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${LCS_PORT:-18765}:8000"
+    read_only: true
+    # Small in-memory /tmp in case a library insists on one; the app writes nothing to disk.
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
