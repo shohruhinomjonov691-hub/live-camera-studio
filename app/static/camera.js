@@ -15,6 +15,9 @@
 //   blur OFF; blur ON turns glasses OFF), and blur is still drawn last. A landmarker or effect failure only
 //   turns the effect off. Changing either setting drops the frame in flight.
 // - Snapshots are copied from the visible, fully processed canvas only — never from the raw video.
+// - Background effects use the person mask of that same frame. Layers: background (blurred frame or the
+//   user's image) -> foreground (frame cut out by the mask) -> glasses or face blur. With a background on,
+//   a frame without a valid mask is never shown (the real background must not reappear unannounced).
 //
 // The controller takes its browser dependencies as `env`, so tests can drive it with fakes.
 (function (global) {
@@ -27,6 +30,10 @@
   // Every scratch cell covers at least MIN_CELL×MIN_CELL source pixels, so even a tiny box is really reduced
   // and no original pixel survives when canvas filters are unavailable.
   const MIN_CELL = 4;
+  // Background blur: the frame is reduced to 1/N size and scaled back up, so the background is blurred
+  // even without canvas filters; a filter softens the blocks where available.
+  const BG_REDUCE = { 1: 12, 2: 20, 3: 32 };
+  const MASK_ASPECT_TOLERANCE = 0.03;
 
   /** Pad a detector box by PADDING on each side and clip it to the frame. */
   function boxFor(face, width, height) {
@@ -120,6 +127,33 @@
     }
   }
 
+  /** A mask is usable only if it is complete and has the frame's aspect ratio. */
+  function validMask(mask, frame) {
+    if (!mask || !(mask.width > 0) || !(mask.height > 0) || !mask.alpha) return false;
+    if (mask.alpha.length !== mask.width * mask.height) return false;
+    const frameAspect = frame.width / frame.height;
+    return Math.abs(mask.width / mask.height - frameAspect) / frameAspect <= MASK_ASPECT_TOLERANCE;
+  }
+
+  /** Draw `image` to cover the w×h canvas (centre crop), flipped horizontally when `mirror` is set. */
+  function drawCover(ctx, image, w, h, mirror) {
+    const scale = Math.max(w / image.width, h / image.height);
+    const dw = image.width * scale;
+    const dh = image.height * scale;
+    ctx.save();
+    try {
+      if (mirror) {
+        // The preview (and a mirrored snapshot) flips the whole canvas, so a flipped image ends up the
+        // right way round for the viewer.
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(image, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    } finally {
+      ctx.restore();
+    }
+  }
+
   function stopTracks(stream) {
     stream.getTracks().forEach((track) => track.stop());
   }
@@ -157,7 +191,11 @@
     const settings = {
       blurOn: true, method: "pixel", strength: 3, showBoxes: true, facingMode: "user",
       glasses: false, glassesSize: 100,
+      background: "off", bgBlur: 2, mirror: true,
     };
+    // Selfie segmenter for background effects: "off" | "loading" | "ready" | "error".
+    let segmenter = "off";
+    let backgroundImage = null; // ImageBitmap chosen by the user; owned (and closed) by this controller
     // Face landmarker for the glasses effect: "off" | "loading" | "ready" | "error". Independent of blur.
     let landmarker = "off";
     let viewReady = false; // the visible canvas holds a fully processed frame
@@ -176,6 +214,9 @@
     let stateInfo = null;
     const buffer = env.makeCanvas();
     const scratch = env.makeCanvas();
+    const foreground = env.makeCanvas();
+    const maskCanvas = env.makeCanvas();
+    const bgSmall = env.makeCanvas();
     const perf = { windowStart: 0, windowCount: 0, fps: null, inferMs: [], latencyMs: [], frameSize: null };
 
     function setState(next, info = null) {
@@ -217,7 +258,26 @@
       created.onerror = (event) => worker === created && onWorkerFailure(event && event.message);
       created.postMessage({ type: "init" });
       if (settings.glasses) requestLandmarker();
+      if (settings.background !== "off") requestSegmenter();
       return workerReady;
+    }
+
+    function setSegmenter(next, message = null) {
+      segmenter = next;
+      if (env.onBackground) env.onBackground(next, message);
+    }
+
+    /** Load the segmenter in the worker (once, or again after an error). */
+    function requestSegmenter() {
+      if (!worker || segmenter === "loading" || segmenter === "ready") return;
+      setSegmenter("loading");
+      worker.postMessage({ type: "init-segmenter" });
+    }
+
+    /** With a background on, a frame that cannot be cut out is hidden, never shown with its real background. */
+    function hideForBackground() {
+      clearView();
+      setState("hidden", { why: segmenter === "error" ? "bgError" : segmenter === "ready" ? "bgInvalid" : "bgLoading" });
     }
 
     function setLandmarker(next, message = null) {
@@ -258,6 +318,7 @@
       detectorUp = false;
       pendingInit = null;
       if (landmarker !== "off") setLandmarker("off"); // a new worker loads it again
+      if (segmenter !== "off") setSegmenter("off");
     }
 
     function onWorkerMessage(msg) {
@@ -267,6 +328,15 @@
         pendingInit = null;
       } else if (msg.type === "landmarker-ready") {
         setLandmarker("ready");
+      } else if (msg.type === "segmenter-ready") {
+        setSegmenter("ready");
+      } else if (msg.type === "segmenter-error") {
+        setSegmenter("error", msg.message);
+        if (settings.background !== "off" && (state === "live" || state === "hidden")) {
+          dropJob();
+          hideForBackground();
+          if (stream) schedule();
+        }
       } else if (msg.type === "landmarker-error") {
         effectFailed(msg.message);
       } else if (msg.type === "result") {
@@ -408,6 +478,7 @@
       const current = {
         id: ++frameId, session: camSession, frame: null, copy: null, capturedAt: env.now(), timer: null,
         landmarks: settings.glasses && landmarker === "ready",
+        segment: settings.background !== "off" && segmenter === "ready",
       };
       job = current;
       current.timer = env.setTimeout(() => onDeadline(current), PENDING_TIMEOUT_MS);
@@ -436,7 +507,7 @@
       worker.postMessage(
         {
           type: "detect", session: current.session, frameId: current.id, bitmap: current.copy,
-          timestamp: env.now(), landmarks: current.landmarks,
+          timestamp: env.now(), landmarks: current.landmarks, segment: current.segment,
         },
         [current.copy],
       );
@@ -466,10 +537,14 @@
       // Landmarks of this very frame, only if the effect is still on.
       const eyes = current.landmarks && settings.glasses && Array.isArray(msg.eyes) ? msg.eyes : [];
       try {
+        // Mask of this very frame, only if a background is still on and it was asked for this frame.
+        const mask = settings.background !== "off" && current.segment && validMask(msg.mask, current.frame) ? msg.mask : null;
         if (settings.blurOn && faces.length === 0) {
           clearView();
           setState("hidden", { why: "noface" });
-        } else if (compose(current.frame, faces, eyes)) {
+        } else if (settings.background !== "off" && !mask) {
+          hideForBackground();
+        } else if (compose(current.frame, faces, eyes, mask)) {
           setState("live", { faces: faces.length, blurOn: settings.blurOn });
         } else {
           // An effect failure inside compose turned blur back on and there is no face to blur.
@@ -486,7 +561,7 @@
     }
 
     /** Draw one processed frame. Returns false (and leaves every canvas cleared) if it must not be shown. */
-    function compose(frame, faces, eyes = []) {
+    function compose(frame, faces, eyes = [], mask = null) {
       const width = frame.width;
       const height = frame.height;
       for (const canvas of [buffer, env.view, env.overlay]) {
@@ -495,7 +570,12 @@
       }
       const bctx = buffer.getContext("2d");
       bctx.clearRect(0, 0, width, height);
-      bctx.drawImage(frame, 0, 0);
+      if (mask) {
+        drawBackground(bctx, frame, width, height);
+        drawForeground(bctx, frame, mask, width, height);
+      } else {
+        bctx.drawImage(frame, 0, 0);
+      }
       if (eyes.length) {
         // An effect error must never cost the blur: turn the effect off and carry on.
         try {
@@ -529,6 +609,78 @@
       perf.frameSize = { w: width, h: height };
       viewReady = true;
       return true;
+    }
+
+    function drawBackground(ctx, frame, width, height) {
+      if (settings.background === "image" && backgroundImage) {
+        drawCover(ctx, backgroundImage, width, height, settings.mirror);
+        return;
+      }
+      const reduce = BG_REDUCE[settings.bgBlur] || BG_REDUCE[2];
+      bgSmall.width = Math.max(1, Math.round(width / reduce));
+      bgSmall.height = Math.max(1, Math.round(height / reduce));
+      const sctx = bgSmall.getContext("2d");
+      sctx.imageSmoothingEnabled = true;
+      sctx.drawImage(frame, 0, 0, bgSmall.width, bgSmall.height);
+      ctx.save();
+      try {
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(bgSmall, 0, 0, bgSmall.width, bgSmall.height, 0, 0, width, height);
+        ctx.filter = `blur(${Math.max(2, Math.round(reduce / 2))}px)`;
+        ctx.drawImage(bgSmall, 0, 0, bgSmall.width, bgSmall.height, 0, 0, width, height);
+      } finally {
+        ctx.restore();
+      }
+    }
+
+    function drawForeground(ctx, frame, mask, width, height) {
+      maskCanvas.width = mask.width;
+      maskCanvas.height = mask.height;
+      const mctx = maskCanvas.getContext("2d");
+      const image = mctx.createImageData(mask.width, mask.height);
+      for (let i = 0; i < mask.alpha.length; i++) image.data[i * 4 + 3] = mask.alpha[i];
+      mctx.putImageData(image, 0, 0);
+      foreground.width = width;
+      foreground.height = height;
+      const fctx = foreground.getContext("2d");
+      fctx.globalCompositeOperation = "source-over";
+      fctx.clearRect(0, 0, width, height);
+      fctx.drawImage(frame, 0, 0);
+      fctx.globalCompositeOperation = "destination-in"; // keep the person only
+      fctx.imageSmoothingEnabled = true;
+      fctx.drawImage(maskCanvas, 0, 0, mask.width, mask.height, 0, 0, width, height);
+      fctx.globalCompositeOperation = "source-over";
+      ctx.drawImage(foreground, 0, 0);
+    }
+
+    /** Replace (or remove, with null) the background image. The previous bitmap is closed. */
+    function setBackgroundImage(bitmap) {
+      if (backgroundImage && backgroundImage !== bitmap) backgroundImage.close();
+      backgroundImage = bitmap || null;
+      if (!backgroundImage && settings.background === "image") applyBackground({ background: "off" });
+      else if (settings.background === "image") backgroundChanged();
+    }
+
+    /** Background settings changed: drop the frame in flight and keep the preview covered (and snapshots
+     *  blocked) until a frame processed with the new settings arrives. */
+    function backgroundChanged() {
+      dropJob();
+      clearView();
+      if (state === "live" || state === "hidden") setState("hidden", { why: "bgPending" });
+      if (stream && state !== "error") schedule();
+    }
+
+    function applyBackground(partial) {
+      const next = { ...settings, ...partial };
+      if (next.background === "image" && !backgroundImage) next.background = settings.background;
+      if (!["off", "blur", "image"].includes(next.background)) next.background = settings.background;
+      const changed =
+        next.background !== settings.background ||
+        (next.background === "blur" && next.bgBlur !== settings.bgBlur) ||
+        (next.background === "image" && next.mirror !== settings.mirror);
+      Object.assign(settings, { background: next.background, bgBlur: next.bgBlur, mirror: next.mirror });
+      if (settings.background !== "off") requestSegmenter();
+      if (changed) backgroundChanged();
     }
 
     function canSnapshot() {
@@ -594,6 +746,16 @@
         }
       },
       setSettings(partial) {
+        const { background, bgBlur, mirror, ...rest } = partial;
+        if (background !== undefined || bgBlur !== undefined || mirror !== undefined) {
+          // Background changes never change the blur/glasses choice.
+          applyBackground({
+            ...(background !== undefined && { background }),
+            ...(bgBlur !== undefined && { bgBlur }),
+            ...(mirror !== undefined && { mirror }),
+          });
+        }
+        partial = rest;
         const next = { ...settings, ...partial };
         // Glasses and face blur are exclusive: glasses ON turns blur OFF, blur ON turns glasses OFF.
         // Turning glasses off never turns blur back on (that stays the user's explicit choice).
@@ -633,8 +795,21 @@
       stats,
       snapshot,
       canSnapshot,
+      setBackgroundImage,
+      /** Retry loading the segmenter after an error. */
+      retryBackground() {
+        if (segmenter === "error") requestSegmenter();
+      },
+      /** Release the background image (page is going away). */
+      dispose() {
+        stop();
+        setBackgroundImage(null);
+      },
       get effect() {
         return landmarker;
+      },
+      get background() {
+        return { mode: settings.background, segmenter, hasImage: Boolean(backgroundImage) };
       },
     };
   }

@@ -52,7 +52,7 @@ class FakeElement {
 function loadShell({ realCamera = false } = {}) {
   const elements = new Map();
   // Fake camera pipeline for the real controller: stream, worker, bitmaps, frame callbacks, timers.
-  const media = { workers: [], frames: [], timers: [], bitmaps: [], canvases: [] };
+  const media = { workers: [], frames: [], timers: [], bitmaps: [], canvases: [], decodes: [] };
   const track = { stopped: false, stop() { this.stopped = true; }, addEventListener() {} };
   const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
   const windowListeners = {};
@@ -63,6 +63,10 @@ function loadShell({ realCamera = false } = {}) {
     active: true,
     state: "live",
     stop() { this.active = false; },
+    dispose() { this.active = false; },
+    background: { mode: "off", segmenter: "off", hasImage: false },
+    setBackgroundImage() {},
+    retryBackground() {},
     snapshot() {
       return { width: 640, height: 480, toBlob: (callback) => (pendingBlob = callback) };
     },
@@ -79,8 +83,13 @@ function loadShell({ realCamera = false } = {}) {
       postMessage(msg) { this.posted.push(msg); }
       terminate() { this.terminated = true; }
     },
-    createImageBitmap: async (source) => {
-      const bitmap = { width: 640, height: 480, source, closed: false, close() { this.closed = true; } };
+    createImageBitmap: async (source, options) => {
+      if (source && source.isFile) {
+        // Background image decode: the test decides when (and with what size) it finishes.
+        return new Promise((resolve, reject) => media.decodes.push({ source, resolve, reject }));
+      }
+      const size = options && options.resizeWidth ? [options.resizeWidth, options.resizeHeight] : [640, 480];
+      const bitmap = { width: size[0], height: size[1], source, closed: false, close() { this.closed = true; } };
       media.bitmaps.push(bitmap);
       return bitmap;
     },
@@ -354,4 +363,90 @@ test("[p2] a landmarker error while glasses are already off does not claim blur 
   worker.onmessage({ data: { type: "landmarker-error", message: "late" } });
   assert.equal(h.el("#effect-alert").hidden, true);
   assert.equal(h.el("#t-blur").checked, false);
+});
+
+// ---------- 3-batch: background image in the shell ----------
+
+const imageFile = (name, type = "image/png", size = 1000) => ({ isFile: true, name, type, size });
+const decoded = (w, h) => ({ width: w, height: h, closed: false, close() { this.closed = true; } });
+
+test("[bg] the Image mode is disabled until an image is loaded; loading switches to it", async () => {
+  const h = loadShell({ realCamera: true });
+  const shell = h.context.liveCameraShell;
+  const camera = h.context.liveCamera;
+  camera.setSettings({ background: "image" });
+  assert.equal(camera.background.mode, "off");
+  const pending = shell.loadBackgroundImage(imageFile("a.png"));
+  h.media.decodes[0].resolve(decoded(800, 600));
+  await pending;
+  assert.equal(camera.background.mode, "image");
+  assert.equal(camera.background.hasImage, true);
+  assert.equal(h.el("#bg-image-info").hidden, false);
+  // Remove turns the image background off.
+  h.el("#bg-remove").listeners.click.forEach((fn) => fn());
+  assert.equal(camera.background.mode, "off");
+  assert.equal(camera.background.hasImage, false);
+});
+
+test("[bg] an older decode that finishes after a newer choice is discarded and closed", async () => {
+  const h = loadShell({ realCamera: true });
+  const shell = h.context.liveCameraShell;
+  const first = shell.loadBackgroundImage(imageFile("first.png"));
+  const second = shell.loadBackgroundImage(imageFile("second.png"));
+  const newer = decoded(640, 480);
+  const older = decoded(1024, 768);
+  h.media.decodes[1].resolve(newer);
+  await second;
+  h.media.decodes[0].resolve(older); // the first choice finishes last
+  await first;
+  assert.equal(older.closed, true, "stale decode closed");
+  assert.equal(newer.closed, false, "current image kept");
+  assert.equal(h.context.liveCamera.background.hasImage, true);
+  assert.equal(h.el("#bg-image-info").textContent, "Image ready · 640×480");
+});
+
+test("[bg] type, size and pixel limits are enforced before use", async () => {
+  const h = loadShell({ realCamera: true });
+  const shell = h.context.liveCameraShell;
+  await shell.loadBackgroundImage(imageFile("x.gif", "image/gif"));
+  assert.equal(h.el("#bg-image-error").textContent, "Choose a JPEG, PNG or WebP image.");
+  await shell.loadBackgroundImage(imageFile("big.png", "image/png", 11 * 1024 * 1024));
+  assert.equal(h.el("#bg-image-error").textContent, "The image must be 10 MB or smaller.");
+  assert.equal(h.media.decodes.length, 0, "rejected files are not decoded");
+  const pending = shell.loadBackgroundImage(imageFile("huge.png"));
+  const huge = decoded(9000, 3000);
+  h.media.decodes[0].resolve(huge);
+  await pending;
+  assert.equal(huge.closed, true);
+  assert.equal(h.el("#bg-image-error").textContent, "The image must be at most 25 megapixels and 8000 px on the longest side.");
+  assert.equal(h.context.liveCamera.background.hasImage, false);
+});
+
+test("[bg] large images are kept downscaled; the full decode is closed", async () => {
+  const h = loadShell({ realCamera: true });
+  const pending = h.context.liveCameraShell.loadBackgroundImage(imageFile("large.jpg", "image/jpeg"));
+  const full = decoded(4000, 3000);
+  h.media.decodes[0].resolve(full);
+  await pending;
+  assert.equal(full.closed, true);
+  const kept = h.media.bitmaps.at(-1);
+  assert.deepEqual([kept.width, kept.height], [1920, 1440]);
+  assert.equal(kept.closed, false);
+});
+
+test("[bg] pagehide discards a decode in flight and closes the current image", async () => {
+  const h = loadShell({ realCamera: true });
+  const shell = h.context.liveCameraShell;
+  const first = shell.loadBackgroundImage(imageFile("a.png"));
+  const current = decoded(800, 600);
+  h.media.decodes[0].resolve(current);
+  await first;
+  const pending = shell.loadBackgroundImage(imageFile("b.png"));
+  h.fire("pagehide");
+  assert.equal(current.closed, true, "current image released");
+  const late = decoded(800, 600);
+  h.media.decodes[1].resolve(late);
+  await pending;
+  assert.equal(late.closed, true, "late decode discarded");
+  assert.equal(h.context.liveCamera.background.hasImage, false);
 });

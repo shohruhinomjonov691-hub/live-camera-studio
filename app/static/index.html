@@ -243,8 +243,32 @@
     </div>
 
     <div class="panel-body" id="p-background" hidden>
-      <div class="row"><h3 data-i18n="mode.background">Background</h3><span class="tag later" data-i18n="mode.later"></span></div>
-      <p class="fineprint" data-i18n="background.soon"></p>
+      <h3 data-i18n="bg.title">Background</h3>
+      <div class="pills" id="bg-pills" role="radiogroup" data-i18n-aria="bg.title" aria-label="Background">
+        <button type="button" class="pill" role="radio" data-bg="off" aria-checked="true" aria-pressed="true" data-i18n="bg.off">Off</button>
+        <button type="button" class="pill" role="radio" data-bg="blur" aria-checked="false" aria-pressed="false" data-i18n="bg.blur">Blur</button>
+        <button type="button" class="pill" role="radio" data-bg="image" aria-checked="false" aria-pressed="false" disabled data-i18n="bg.image">Image</button>
+      </div>
+      <p class="status-note" id="bg-status" hidden>
+        <span id="bg-status-text"></span>
+        <button type="button" class="btn small ghost" id="bg-retry" hidden data-i18n="bg.retry">Retry</button>
+      </p>
+      <div class="field" id="bg-blur-field" hidden>
+        <div class="row"><label class="label" for="t-bg-blur" data-i18n="bg.strength">Background blur</label><span class="meta" id="t-bg-blur-value"></span></div>
+        <input id="t-bg-blur" type="range" min="1" max="3" step="1" value="2">
+      </div>
+      <div class="field">
+        <span class="label" data-i18n="bg.imageLabel">Background image</span>
+        <input id="bg-file" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" tabindex="-1">
+        <div class="row">
+          <button type="button" class="btn" id="bg-pick" data-i18n="bg.pick">Choose image</button>
+          <button type="button" class="btn ghost" id="bg-remove" hidden data-i18n="bg.remove">Remove</button>
+        </div>
+        <p class="meta" id="bg-image-info" hidden></p>
+        <p class="status-note error" id="bg-image-error" hidden></p>
+        <p class="fineprint" data-i18n="bg.localNote">JPEG, PNG or WebP · up to 10 MB and 25 megapixels. The image stays in this browser and is never uploaded.</p>
+      </div>
+      <p class="fineprint" data-i18n="bg.segNote"></p>
     </div>
 
     <div class="panel-body shots-section">

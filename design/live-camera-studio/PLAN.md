@@ -171,6 +171,14 @@ Commitlar `fix:` prefiksi bilan. Boshlanish sharti: Face Blur MVP va shu reja Co
 - **Snapshot:** ko‘rinayotgan ishlangan canvas’dan (xom video emas), Mirror yoqilgan bo‘lsa preview kabi aylantiriladi; bbox/HUD yo‘q; PNG chunk’lari faqat `IHDR/IDAT/IEND`. Tugma faqat `live` holatida yoqiq (loading, blur qayta yoqilgandan keyingi pending, hidden, error, stopped — o‘chiq). Kadrlar orasidagi qisqa kutishda ekranda oxirgi ishlangan kadr turadi va u snapshot qilinadi.
 - **O‘lchov (fake kamera, Apple M2, headless Chrome 154):** ko‘zoynak bilan 30 FPS, latency p95 20.6 ms; ko‘zoynaksiz p95 ~9 ms.
 
+## 3-batch natijasi (2026-10-08, `develop`)
+
+- **Vendor:** `selfie_segmenter.tflite` (umumiy 256×256, `float16/1` = `latest`, SHA-256 `191ac952…`), model card “MediaPipe Selfie Segmentation” (2021-05-06) — Apache 2.0. Landscape variant olinmadi (telefonlarda portret kadrlar).
+- **Worker:** `ImageSegmenter` umumiy `oneAtATime` navbatida; detect, landmarks va mask bitta bitmap’da; mask callback ichida 8-bit alpha’ga ko‘chiriladi va tekshiriladi (o‘lcham, 0–1 qiymatlar), buffer transfer qilinadi; xato `maskError`.
+- **Controller:** `background: off | blur | image`; image faqat rasm bo‘lsa; fon blur/glasses tanloviga tegmaydi. Mask faqat shu job so‘ragan bo‘lsa va yaroqli (to‘liq, kadr nisbati ±3%) bo‘lsa ishlatiladi; aks holda kadr yashiriladi (`bgLoading` / `bgError` / `bgInvalid`). Qatlam: fon (kichraytirib-kattalashtirilgan blur yoki cover-crop rasm, mirror’da aylantirilgan) → mask bilan kesilgan odam → glasses yoki face blur. Fon sozlamasi (rejim, blur darajasi, rasm, rasm rejimida mirror) o‘zgarsa job tashlanadi, canvas tozalanadi, snapshot bloklanadi (`bgPending`). Retry, background OFF bilan tiklanish; `dispose()` rasmni yopadi.
+- **Shell:** fon paneli (Off/Blur/Image, blur darajasi, rasm tanlash/olib tashlash, status + Retry), EN/KO. Rasm: tur/hajm tekshiruvi decode’dan oldin, piksel/tomon tekshiruvi decode’dan keyin, ≤1920 px’ga kichraytiriladi, eski decode (generation) tashlanadi, pagehide’da bekor qilinadi va rasm yopiladi.
+- **O‘lchov (fake kamera = statik test portreti, Apple M2, headless Chrome 154):** fon blur 30 FPS, latency p95 17.8 ms; rasm 28 FPS, p95 17.8 ms. Segmentatsiya sifati o‘lchanmagan.
+
 ## Ochiq savollar
 
 - Koreyscha tarjima — Claude qoralamasi, ona tilida so‘zlashuvchi tekshiruvi kerak.

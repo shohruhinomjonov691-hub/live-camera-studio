@@ -19,6 +19,12 @@ function fakeCanvas(name) {
     {
       get(target, key) {
         if (key in target) return target[key];
+        if (key === "createImageData") {
+          return (w, h) => {
+            canvas.ops.push([key, w, h]);
+            return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) };
+          };
+        }
         return (...args) => {
           if (canvas.throwOn === key) throw new Error(`${key} failed`);
           canvas.ops.push([key, ...args]);
@@ -115,6 +121,9 @@ function setup({ secure = true, deferBitmaps = false } = {}) {
       return workers.at(-1);
     },
     buffer: () => made[0],
+    foreground: () => made[2],
+    maskCanvas: () => made[3],
+    bgSmall: () => made[4],
     detects: () => workers.at(-1).posted.filter((m) => m.type === "detect"),
     gum: () => gum,
     state: () => camera.state,
@@ -966,4 +975,288 @@ test("[p1] control: landmark error in a zero-face result is hidden too (fallback
   assert.equal(h.camera.settings.blurOn, true);
   assert.equal(h.state(), "hidden");
   assert.equal(h.camera.canSnapshot(), false);
+});
+
+// ---------- 3-batch: background blur / image ----------
+
+const fullMask = (w = 640, h = 480, value = 200) => ({ width: w, height: h, alpha: new Uint8ClampedArray(w * h).fill(value) });
+const fakeImage = (w = 800, h = 600) => ({ width: w, height: h, closed: false, close() { this.closed = true; } });
+
+async function liveWithBackground(h, { mode = "blur", ready = true, image = null } = {}) {
+  if (image) h.camera.setBackgroundImage(image);
+  h.camera.setSettings({ background: mode });
+  await goLive(h);
+  assert.ok(h.worker.posted.some((m) => m.type === "init-segmenter"), "segmenter requested with the worker");
+  if (ready) h.worker.reply({ type: "segmenter-ready", initMs: 1 });
+}
+
+function replyBg(h, msg, extra = {}) {
+  h.worker.reply({
+    type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, inferMs: 5,
+    eyes: null, landmarksError: null, mask: fullMask(), maskError: null, ...extra,
+  });
+}
+
+async function bgFrame(h, extra = {}) {
+  await h.runFrame();
+  const msg = h.lastDetect();
+  replyBg(h, msg, extra);
+  return msg;
+}
+
+test("[bg] blur: mask of the same frame; background -> foreground -> face blur", async () => {
+  const h = setup();
+  await liveWithBackground(h);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  assert.equal(msg.segment, true);
+  const frame = h.captured.at(-1);
+  replyBg(h, msg);
+  assert.equal(h.state(), "live");
+  const buf = h.buffer();
+  const iBg = buf.ops.findIndex((op) => op[0] === "drawImage" && op[1] === h.bgSmall());
+  const iFg = buf.ops.findIndex((op) => op[0] === "drawImage" && op[1] === h.foreground());
+  const iBlur = firstIndex(buf, "clip");
+  assert.ok(iBg >= 0 && iFg > iBg && iBlur > iFg, `order bg ${iBg} < fg ${iFg} < face blur ${iBlur}`);
+  assert.ok(h.bgSmall().ops.some((op) => op[0] === "drawImage" && op[1] === frame), "background from this frame");
+  assert.ok(h.foreground().ops.some((op) => op[0] === "drawImage" && op[1] === frame), "foreground from this frame");
+  assert.ok(h.foreground().ops.some((op) => op[0] === "drawImage" && op[1] === h.maskCanvas()), "cut out by this mask");
+  assert.ok(!buf.ops.some((op) => op[0] === "drawImage" && op[1] === frame), "the raw frame is never drawn whole");
+  assert.equal(frame.closed, true);
+});
+
+test("[bg] glasses with a background: glasses over the foreground, no face blur", async () => {
+  const h = setup();
+  h.camera.setSettings({ glasses: true });
+  await liveWithBackground(h);
+  h.worker.reply({ type: "landmarker-ready", initMs: 1 });
+  await h.runFrame();
+  const msg = h.lastDetect();
+  assert.equal(msg.landmarks && msg.segment, true, "landmarks and mask for the same frame");
+  replyBg(h, msg, { eyes: EYES });
+  const buf = h.buffer();
+  const iFg = buf.ops.findIndex((op) => op[0] === "drawImage" && op[1] === h.foreground());
+  assert.ok(iFg >= 0 && firstIndex(buf, "arcTo") > iFg);
+  assert.equal(firstIndex(buf, "clip"), -1);
+});
+
+test("[bg] background changes never change the blur or glasses choice", () => {
+  const h = setup();
+  h.camera.setSettings({ glasses: true });
+  for (const background of ["blur", "off", "blur"]) {
+    h.camera.setSettings({ background });
+    assert.deepEqual(mode(h), { glasses: true, blurOn: false });
+  }
+  h.camera.setSettings({ blurOn: true });
+  h.camera.setSettings({ background: "off", bgBlur: 3 });
+  assert.deepEqual(mode(h), { glasses: false, blurOn: true });
+});
+
+test("[bg] image mode needs an image; only one mode at a time; removing the image turns it off", () => {
+  const h = setup();
+  h.camera.setSettings({ background: "image" });
+  assert.equal(h.camera.background.mode, "off", "no image yet: image mode refused");
+  const image = fakeImage();
+  h.camera.setBackgroundImage(image);
+  h.camera.setSettings({ background: "image" });
+  assert.equal(h.camera.background.mode, "image");
+  h.camera.setSettings({ background: "blur" });
+  assert.equal(h.camera.background.mode, "blur");
+  h.camera.setSettings({ background: "image" });
+  h.camera.setBackgroundImage(null);
+  assert.equal(image.closed, true);
+  assert.equal(h.camera.background.mode, "off");
+  h.camera.setSettings({ background: "sepia" });
+  assert.equal(h.camera.background.mode, "off", "unknown modes are ignored");
+});
+
+test("[bg] while the segmenter loads the preview stays hidden; it opens once masks arrive", async () => {
+  const h = setup();
+  await liveWithBackground(h, { ready: false });
+  await h.runFrame();
+  const early = h.lastDetect();
+  assert.equal(early.segment, false);
+  replyBg(h, early, { mask: null });
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "bgLoading" }]);
+  assert.equal(viewDraws(h.env.view).length, 0, "nothing shown without a mask");
+  assert.equal(h.camera.canSnapshot(), false);
+  h.worker.reply({ type: "segmenter-ready", initMs: 1 });
+  await bgFrame(h);
+  assert.equal(h.state(), "live");
+});
+
+test("[bg] segmenter error: hidden at once, snapshot blocked; Retry or background OFF recovers", async () => {
+  const h = setup();
+  await liveWithBackground(h);
+  await bgFrame(h);
+  assert.equal(h.state(), "live");
+  h.worker.reply({ type: "segmenter-error", message: "model blocked" });
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "bgError" }]);
+  assert.ok(cleared(h.env.view) && cleared(h.buffer()));
+  assert.equal(h.camera.snapshot(), null);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  assert.equal(msg.segment, false);
+  replyBg(h, msg, { mask: null });
+  assert.equal(h.state(), "hidden", "the real background is not shown");
+
+  h.camera.retryBackground();
+  assert.equal(h.worker.posted.filter((m) => m.type === "init-segmenter").length, 2);
+  h.worker.reply({ type: "segmenter-ready", initMs: 1 });
+  await bgFrame(h);
+  assert.equal(h.state(), "live", "retry recovers");
+
+  h.worker.reply({ type: "segmenter-error", message: "again" });
+  h.camera.setSettings({ background: "off" });
+  await showFrame(h, FACE);
+  assert.equal(h.state(), "live", "background OFF recovers");
+});
+
+test("[bg] an invalid or missing mask hides that frame", async () => {
+  const h = setup();
+  await liveWithBackground(h);
+  for (const bad of [null, fullMask(640, 240), { width: 640, height: 480, alpha: new Uint8ClampedArray(10) }, { width: 0, height: 0, alpha: new Uint8ClampedArray(0) }]) {
+    await h.runFrame();
+    replyBg(h, h.lastDetect(), { mask: bad, maskError: bad ? null : "no person mask" });
+    assert.equal(h.state(), "hidden", JSON.stringify(bad && [bad.width, bad.height]));
+    assert.ok(cleared(h.env.view));
+  }
+  await bgFrame(h, { mask: fullMask(320, 240) }); // same aspect, smaller: fine
+  assert.equal(h.state(), "live");
+});
+
+test("[bg] a result for a frame captured before a background change is dropped", async () => {
+  const h = setup();
+  await goLive(h);
+  await showFrame(h, FACE);
+  await h.runFrame(); // captured with background off
+  const stale = h.lastDetect();
+  const staleFrame = h.captured.at(-1);
+  h.camera.setSettings({ background: "blur" });
+  h.worker.reply({ type: "segmenter-ready", initMs: 1 });
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "bgPending" }]);
+  assert.ok(cleared(h.env.view));
+  assert.equal(staleFrame.closed, true);
+  const draws = viewDraws(h.env.view).length;
+  replyBg(h, stale);
+  assert.equal(viewDraws(h.env.view).length, draws, "stale success ignored");
+  h.worker.reply({ type: "error", stage: "detect", session: stale.session, frameId: stale.frameId, message: "late" });
+  assert.notEqual(h.state(), "error", "stale error ignored");
+  await bgFrame(h);
+  assert.equal(h.state(), "live");
+});
+
+test("[bg] every background setting change wipes, drops the job and blocks snapshots until a new frame", async () => {
+  const h = setup();
+  const image = fakeImage();
+  h.camera.setBackgroundImage(image);
+  await liveWithBackground(h);
+  const changes = [
+    { bgBlur: 3 },
+    { background: "image" },
+    { mirror: false }, // matters for an image background
+    { background: "off" },
+  ];
+  for (const change of changes) {
+    await bgFrame(h);
+    assert.ok(h.camera.canSnapshot(), "before the change");
+    await h.runFrame();
+    const inFlight = h.captured.at(-1);
+    h.camera.setSettings(change);
+    assert.equal(h.camera.canSnapshot(), false, JSON.stringify(change));
+    assert.ok(cleared(h.env.view), JSON.stringify(change));
+    assert.equal(inFlight.closed, true);
+  }
+  // A new image replaces the old one (closed) and also counts as a change.
+  h.camera.setSettings({ background: "image" });
+  await bgFrame(h);
+  const next = fakeImage(640, 480);
+  h.camera.setBackgroundImage(next);
+  assert.equal(image.closed, true);
+  assert.equal(h.camera.canSnapshot(), false);
+  await bgFrame(h);
+  assert.ok(h.camera.canSnapshot());
+});
+
+test("[bg] mirror: an image background is drawn flipped so the mirrored preview shows it the right way", async () => {
+  const h = setup();
+  const image = fakeImage();
+  await liveWithBackground(h, { mode: "image", image });
+  await bgFrame(h);
+  let ops = h.buffer().ops;
+  let iImage = ops.findIndex((op) => op[0] === "drawImage" && op[1] === image);
+  assert.ok(iImage > 0);
+  assert.deepEqual(plain(ops.slice(0, iImage).filter((op) => op[0] === "scale").at(-1)), ["scale", -1, 1]);
+
+  h.camera.setSettings({ mirror: false });
+  await bgFrame(h);
+  ops = h.buffer().ops;
+  const last = ops.findLastIndex((op) => op[0] === "drawImage" && op[1] === image);
+  const lastScale = ops.slice(0, last).findLastIndex((op) => op[0] === "scale");
+  const lastClear = ops.slice(0, last).findLastIndex((op) => op[0] === "clearRect");
+  assert.ok(lastScale < lastClear, "no flip in this frame when the preview is not mirrored");
+});
+
+test("[bg] timeout with a background, then recovery", async () => {
+  const h = setup();
+  await liveWithBackground(h);
+  await h.runFrame();
+  const stale = h.lastDetect();
+  h.fireTimers(1000);
+  assert.equal(h.state(), "hidden");
+  replyBg(h, stale);
+  assert.equal(h.state(), "hidden", "late mask ignored");
+  await bgFrame(h);
+  assert.equal(h.state(), "live");
+});
+
+test("[bg] Stop -> Start keeps the segmenter; a late result of the old session is ignored", async () => {
+  const h = setup();
+  await liveWithBackground(h);
+  await h.runFrame();
+  const old = h.lastDetect();
+  h.camera.stop();
+  await goLive(h);
+  const draws = viewDraws(h.env.view).length;
+  replyBg(h, old);
+  assert.equal(viewDraws(h.env.view).length, draws);
+  await bgFrame(h);
+  assert.equal(h.state(), "live");
+  assert.ok(h.captured.every((b) => b.closed));
+});
+
+test("[bg] restart: the new worker loads the segmenter again; the old worker cannot mark it ready", async () => {
+  const h = setup();
+  await liveWithBackground(h, { ready: false });
+  const old = h.workers[0];
+  h.camera.restartDetector();
+  assert.equal(h.camera.background.segmenter, "loading");
+  old.reply({ type: "segmenter-ready", initMs: 1 });
+  assert.equal(h.camera.background.segmenter, "loading");
+  assert.equal(h.worker.posted.filter((m) => m.type === "init-segmenter").length, 1);
+});
+
+test("[bg] dispose stops the camera and closes the background image", async () => {
+  const h = setup();
+  const image = fakeImage();
+  const stream = fakeStream();
+  h.camera.setBackgroundImage(image);
+  await liveWithBackground(h, { mode: "image" });
+  h.camera.dispose();
+  assert.equal(image.closed, true);
+  assert.equal(h.state(), "idle");
+  assert.equal(h.camera.background.hasImage, false);
+  void stream;
+});
+
+test("[bg] a mask is used only if it was asked for that very frame", async () => {
+  const h = setup();
+  await liveWithBackground(h, { ready: false });
+  await h.runFrame();
+  const early = h.lastDetect(); // captured before the segmenter was ready: no mask asked for
+  assert.equal(early.segment, false);
+  h.worker.reply({ type: "segmenter-ready", initMs: 1 });
+  replyBg(h, early); // even if a mask comes back with it
+  assert.equal(h.state(), "hidden");
+  assert.equal(viewDraws(h.env.view).length, 0);
 });

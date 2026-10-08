@@ -97,7 +97,8 @@ def test_vendored_mediapipe_files_are_served(client):
     wasm = client.get(f"{base}/tasks-vision-1.0.1/wasm/vision_wasm_module_internal.wasm")
     assert wasm.status_code == 200 and wasm.headers["content-type"] == "application/wasm"
     for path in ("tasks-vision-1.0.1/vision_bundle.mjs", "tasks-vision-1.0.1/wasm/vision_wasm_module_internal.js",
-                 "models/blaze_face_short_range.tflite", "models/face_landmarker.task", "LICENSE", "SOURCES.md"):
+                 "models/blaze_face_short_range.tflite", "models/face_landmarker.task", "models/selfie_segmenter.tflite",
+                 "LICENSE", "SOURCES.md"):
         assert client.get(f"{base}/{path}").status_code == 200, path
 
 
@@ -251,6 +252,7 @@ def test_vendored_files_match_sources_hashes():
         "tasks-vision-1.0.1/wasm/vision_wasm_module_internal.wasm",
         "models/blaze_face_short_range.tflite",
         "models/face_landmarker.task",
+        "models/selfie_segmenter.tflite",
         "LICENSE",
     ]
     for path in files:

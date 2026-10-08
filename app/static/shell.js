@@ -9,7 +9,10 @@
   const OVERLAYS = ["idle", "insecure", "prompt", "loading", "hidden", "denied", "nocam", "ended", "error"];
   const STREAMING = ["live", "hidden"];
   // effectAlert: the glasses effect failed (and blur came back). Cleared only by Dismiss or a retry.
-  const ui = { tab: "camera", camState: "idle", camInfo: null, stats: null, effect: "off", effectAlert: false, snapshots: [] };
+  const ui = {
+    tab: "camera", camState: "idle", camInfo: null, stats: null, effect: "off", effectAlert: false, snapshots: [],
+    segmenter: "off", bgImageInfo: null, bgImageError: null,
+  };
   const MAX_SNAPSHOTS = 6;
 
   const video = $("#cam-video");
@@ -45,6 +48,10 @@
     },
     // The glasses effect failed while on: the controller turned glasses off and blur back on.
     // Say so (sticky) and sync the toggles.
+    onBackground: (status) => {
+      ui.segmenter = status;
+      renderBackground();
+    },
     onEffectFallback: () => {
       ui.effectAlert = true;
       renderAllSettings();
@@ -55,6 +62,7 @@
   // For tests: the snapshot flow without DOM events.
   window.liveCameraShell = {
     takeSnapshot,
+    loadBackgroundImage,
     snapshots: () => ui.snapshots.slice(),
     selectMode: (mode) => selectMode(mode),
   };
@@ -75,6 +83,7 @@
     renderSettings();
     renderEffect();
     renderShots();
+    renderBackground();
   });
 
   // ---------- camera ----------
@@ -84,7 +93,15 @@
     const streaming = STREAMING.includes(state);
     OVERLAYS.forEach((name) => ($(`#ov-${name}`).hidden = state !== name));
     $("#idle-paused").hidden = !(state === "idle" && info.reason === "hidden");
-    const why = { timeout: "hidden.timeout", pending: "hidden.pending" }[info.why] || "hidden.noface";
+    const why =
+      {
+        timeout: "hidden.timeout",
+        pending: "hidden.pending",
+        bgPending: "hidden.bgPending",
+        bgLoading: "hidden.bgLoading",
+        bgError: "hidden.bgError",
+        bgInvalid: "hidden.bgInvalid",
+      }[info.why] || "hidden.noface";
     $("#hidden-why").textContent = t(why);
 
     $("#hud").hidden = !streaming;
@@ -139,6 +156,7 @@
   });
 
   function setMirror(on) {
+    camera.setSettings({ mirror: on }); // a background image is drawn the right way round for the preview
     $("#cam-mirror").setAttribute("aria-pressed", String(on));
     $("#cam-view").classList.toggle("mirrored", on);
     $("#cam-overlay").classList.toggle("mirrored", on);
@@ -258,13 +276,121 @@
     renderEffect();
   });
 
+  // ---------- background ----------
+  // The image is decoded and kept in this browser only (an ImageBitmap); it is never uploaded.
+  const BG_TYPES = ["image/jpeg", "image/png", "image/webp"];
+  const BG_MAX_BYTES = 10 * 1024 * 1024;
+  const BG_MAX_PIXELS = 25_000_000;
+  const BG_MAX_SIDE = 8000;
+  const BG_KEEP_SIDE = 1920; // stored at most this large
+  let backgroundGeneration = 0;
+
+  async function loadBackgroundImage(file) {
+    const generation = ++backgroundGeneration; // a newer choice makes older decodes stale
+    ui.bgImageError = null;
+    if (!BG_TYPES.includes(file.type)) return bgImageFailed("bg.err.type", generation);
+    if (file.size > BG_MAX_BYTES) return bgImageFailed("bg.err.size", generation);
+    ui.bgImageInfo = null;
+    renderBackground();
+    let bitmap;
+    try {
+      bitmap = await window.createImageBitmap(file);
+    } catch (_) {
+      return bgImageFailed("bg.err.decode", generation);
+    }
+    if (generation !== backgroundGeneration) return bitmap.close();
+    const { width, height } = bitmap;
+    if (width * height > BG_MAX_PIXELS || Math.max(width, height) > BG_MAX_SIDE) {
+      bitmap.close();
+      return bgImageFailed("bg.err.pixels", generation);
+    }
+    const scale = Math.min(1, BG_KEEP_SIDE / Math.max(width, height));
+    if (scale < 1) {
+      let small;
+      try {
+        small = await window.createImageBitmap(bitmap, {
+          resizeWidth: Math.round(width * scale),
+          resizeHeight: Math.round(height * scale),
+          resizeQuality: "high",
+        });
+      } catch (_) {
+        bitmap.close();
+        return bgImageFailed("bg.err.decode", generation);
+      }
+      bitmap.close();
+      if (generation !== backgroundGeneration) return small.close();
+      bitmap = small;
+    }
+    camera.setBackgroundImage(bitmap);
+    camera.setSettings({ background: "image" });
+    ui.bgImageInfo = { w: width, h: height };
+    renderBackground();
+  }
+
+  function bgImageFailed(key, generation) {
+    if (generation !== backgroundGeneration) return;
+    ui.bgImageError = key;
+    renderBackground();
+  }
+
+  function renderBackground() {
+    const bg = camera.background;
+    const s = camera.settings;
+    $$("[data-bg]").forEach((pill) => {
+      const on = pill.dataset.bg === bg.mode;
+      pill.setAttribute("aria-pressed", String(on));
+      pill.setAttribute("aria-checked", String(on));
+      if (pill.dataset.bg === "image") pill.disabled = !bg.hasImage; // no image mode before an image is chosen
+    });
+    $("#bg-blur-field").hidden = bg.mode !== "blur";
+    $("#t-bg-blur").value = String(s.bgBlur);
+    $("#t-bg-blur-value").textContent = t(`privacy.strength.${s.bgBlur}`);
+    $("#bg-remove").hidden = !bg.hasImage;
+    $("#bg-image-info").hidden = !(bg.hasImage && ui.bgImageInfo);
+    if (ui.bgImageInfo) $("#bg-image-info").textContent = t("bg.imageInfo", ui.bgImageInfo);
+    $("#bg-image-error").hidden = !ui.bgImageError;
+    if (ui.bgImageError) $("#bg-image-error").textContent = t(ui.bgImageError);
+    const statusKey = bg.mode === "off" ? null : { loading: "bg.loading", error: "bg.error" }[ui.segmenter];
+    $("#bg-status").hidden = !statusKey;
+    $("#bg-status").classList.toggle("error", ui.segmenter === "error");
+    if (statusKey) $("#bg-status-text").textContent = t(statusKey);
+    $("#bg-retry").hidden = !(bg.mode !== "off" && ui.segmenter === "error");
+    $("#bg-status-text").hidden = false;
+  }
+
+  $$("[data-bg]").forEach((pill) =>
+    pill.addEventListener("click", () => {
+      camera.setSettings({ background: pill.dataset.bg });
+      renderBackground();
+    }),
+  );
+  $("#t-bg-blur").addEventListener("input", (e) => {
+    camera.setSettings({ bgBlur: Number(e.target.value) });
+    renderBackground();
+  });
+  $("#bg-pick").addEventListener("click", () => $("#bg-file").click());
+  $("#bg-file").addEventListener("change", () => {
+    const file = $("#bg-file").files[0];
+    $("#bg-file").value = "";
+    if (file) loadBackgroundImage(file);
+  });
+  $("#bg-remove").addEventListener("click", () => {
+    backgroundGeneration++;
+    camera.setBackgroundImage(null); // also switches an image background off
+    ui.bgImageInfo = null;
+    ui.bgImageError = null;
+    renderBackground();
+  });
+  $("#bg-retry").addEventListener("click", () => camera.retryBackground());
+
   // Hidden page, closed page, device sleep: release the camera and stop the loop.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden" && camera.active) camera.stop("hidden");
   });
   window.addEventListener("pagehide", () => {
     snapshotGeneration++;
-    if (camera.active) camera.stop();
+    backgroundGeneration++; // an image still being decoded is discarded
+    camera.dispose(); // stops the camera and closes the background image
     ui.snapshots.forEach((shot) => URL.revokeObjectURL(shot.url));
     ui.snapshots = [];
   });
@@ -316,5 +442,6 @@
   renderSettings();
   renderEffect();
   renderShots();
+  renderBackground();
   renderCamera();
 })();

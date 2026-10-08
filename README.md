@@ -16,7 +16,8 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 - Clear states for permission prompt, blocked permission, no/busy camera, camera unplugged, insecure page and detector errors.
 - Glasses effect: drawn on the eye landmarks of each frame (follows head tilt), adjustable size. Glasses and face blur are exclusive: turning glasses on turns face blur off (the UI then says faces are visible); turning blur on turns glasses off; opening Privacy turns face blur on and glasses off (the preview is wiped at once and reopens with the next blurred frame); turning glasses off yourself does not turn blur back on. If the effect fails, glasses turn off and blur turns back on.
 - Snapshots: a PNG of the processed preview exactly as shown (blur, glasses, mirror), without face boxes or HUD and without metadata; kept in the tab until removed or the page closes. Available only while a processed frame is on screen.
-- Background effects are planned for a later update.
+- Background: Off, Blur (three strengths) or Image — one at a time; Image is available only after an image is chosen. The person is cut out by a selfie segmentation model on the same frame; layers are background → person → glasses or face blur. A background never changes the blur/glasses choice.
+- Background image: JPEG, PNG or WebP, up to 10 MB, 25 megapixels and 8000 px per side; decoded in the browser (kept at most 1920 px), never uploaded. It is drawn the right way round for the mirrored preview and mirrored snapshots.
 
 **Photo upload** (the original Face Blur flow)
 
@@ -30,6 +31,7 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 | --- | --- | --- |
 | Live camera | MediaPipe Face Detector (BlazeFace short range), `@mediapipe/tasks-vision` 1.0.1 | Browser, in a module Web Worker |
 | Glasses effect | MediaPipe Face Landmarker (loaded only when the effect is turned on) | Same worker, same frame as the detector |
+| Background | MediaPipe Image Segmenter, selfie model (loaded only when a background is turned on) | Same worker, same frame |
 | Photo upload | OpenCV frontal-face Haar cascade (reused from `cv_opencv.ipynb` in [computer_vision](https://github.com/shohruhinomjonov691-hub/computer_vision)) | Server, in memory |
 
 MediaPipe files are vendored under `app/static/vendor/mediapipe/` (no CDN). Sources, exact versions, SHA-256 hashes and licenses (Apache-2.0 for the package and every model, per the official model cards) are recorded in [`SOURCES.md`](app/static/vendor/mediapipe/SOURCES.md). The model card puts faces looking away, strongly tilted, or further than about 2 m out of scope. No face recognition, training or paid API is involved.
@@ -44,6 +46,7 @@ Live camera:
 - Every camera start is a session. A stream granted after Cancel, and detector results that arrive after Stop, are discarded (tracks stopped, bitmaps closed). Stop, hiding the page, closing it, switching to Photo upload and a camera that ends all stop the tracks and the render loop and clear the canvas.
 - Turning face blur off is a deliberate user choice: the live preview then shows faces unblurred, and the UI says so. Turning it back on clears the canvas at once; only a frame captured and processed with blur on reappears.
 - Glasses use landmarks computed on the same captured frame as the face boxes. Changing blur or glasses drops the frame in flight, so a result from the old mode never reaches the screen. If the landmarker fails to load or errors, or drawing the glasses fails, the app fails closed: glasses turn off and face blur turns back on (the frame being drawn is blurred; otherwise the canvas is wiped at once).
+- With a background on, a frame is shown only with a valid person mask of that same frame. While the segmenter loads, after it fails, or when a mask is missing or malformed, the preview is hidden (with a message and Retry) — the real background never reappears unannounced. Turning the background off recovers. Changing any background setting drops the frame in flight and keeps the preview covered (and snapshots blocked) until a frame processed with the new settings arrives. The background image is released on Remove and when the page closes.
 - Snapshots copy the visible processed canvas (never the raw video), flipped like the preview when Mirror is on. They are disabled while loading, pending after blur is re-enabled, hidden, in error or stopped. `canvas.toBlob("image/png")` writes only image data (verified: `IHDR`, `IDAT`, `IEND` chunks). Snapshots are not uploaded.
 
 Photo upload:
@@ -113,6 +116,10 @@ Measured 2026-10-08 on a MacBook Air (Apple M2, 8 cores, macOS 26.6.2), headless
 | Capture → displayed latency | p50 7.6 ms, p95 9.0 ms |
 | Detector start (worker, WASM, model) | about 0.1 s after the files are cached |
 | With glasses on (detector + landmarker per frame) | 30 FPS; capture → displayed p95 20.6 ms |
+| Background blur (detector + segmenter per frame) | 30 FPS; capture → displayed p95 17.8 ms |
+| Background image | 28 FPS; capture → displayed p95 17.8 ms |
+
+The fake camera shows a still photo, so these numbers say nothing about segmentation quality on real video (hair, hands, motion, several people).
 
 The user ran real-webcam smoke tests on their Mac (reported as successful; no numbers recorded). Phones, Safari and Firefox have **not** been tested yet.
 

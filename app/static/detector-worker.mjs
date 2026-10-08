@@ -3,22 +3,27 @@
 //
 // in:  {type: "init"}                       load the face detector (needed for blur)
 //      {type: "init-landmarker"}            load the face landmarker (only for the glasses effect)
-//      {type: "detect", session, frameId, bitmap, timestamp, landmarks: bool}
+//      {type: "init-segmenter"}             load the selfie segmenter (only for background effects)
+//      {type: "detect", session, frameId, bitmap, timestamp, landmarks: bool, segment: bool}
 // out: {type: "ready", initMs}
 //      {type: "landmarker-ready", initMs} | {type: "landmarker-error", message}
+//      {type: "segmenter-ready", initMs} | {type: "segmenter-error", message}
 //      {type: "result", session, frameId, faces: [{x, y, w, h, score}], inferMs,
-//       eyes: [{rOuter, rInner, lInner, lOuter}] | null, landmarksError: string | null}
+//       eyes: [{rOuter, rInner, lInner, lOuter}] | null, landmarksError: string | null,
+//       mask: {width, height, alpha: Uint8ClampedArray (transferred)} | null, maskError: string | null}
 //      {type: "error", stage: "init" | "detect", session?, frameId?, message}
 //
-// Detection and landmarks run on the same bitmap. A landmarker failure never fails the detection:
-// the result then carries `landmarksError` and no eyes, and blur keeps working.
+// Detection, landmarks and segmentation run on the same bitmap, so the person mask always belongs to the
+// frame it is applied to. A landmarker or segmenter failure never fails the detection: the result then
+// carries `landmarksError` / `maskError`, and the page decides how to fail closed.
 
-import { FaceDetector, FaceLandmarker, FilesetResolver } from "/static/vendor/mediapipe/tasks-vision-1.0.1/vision_bundle.mjs";
+import { FaceDetector, FaceLandmarker, FilesetResolver, ImageSegmenter } from "/static/vendor/mediapipe/tasks-vision-1.0.1/vision_bundle.mjs";
 import ModuleFactory from "/static/vendor/mediapipe/tasks-vision-1.0.1/wasm/vision_wasm_module_internal.js";
 
 const WASM_BASE = "/static/vendor/mediapipe/tasks-vision-1.0.1/wasm";
 const DETECTOR_MODEL = "/static/vendor/mediapipe/models/blaze_face_short_range.tflite";
 const LANDMARKER_MODEL = "/static/vendor/mediapipe/models/face_landmarker.task";
+const SEGMENTER_MODEL = "/static/vendor/mediapipe/models/selfie_segmenter.tflite";
 // Lower than MediaPipe's 0.5 default: for privacy a missed face costs more than an extra box.
 const MIN_CONFIDENCE = 0.4;
 const MAX_FACES_WITH_GLASSES = 4;
@@ -28,6 +33,7 @@ const EYE_POINTS = { rOuter: 33, rInner: 133, lInner: 362, lOuter: 263 };
 let fileset = null;
 let detector = null;
 let landmarker = null;
+let segmenter = null;
 let lastTimestamp = 0;
 
 // MediaPipe clears self.ModuleFactory after creating each task. In a page it re-runs the loader script for the
@@ -86,6 +92,50 @@ async function initLandmarker() {
   return performance.now() - started;
 }
 
+async function initSegmenter() {
+  const started = performance.now();
+  const files = await loadFileset();
+  segmenter = await oneAtATime(() => {
+    provideModuleFactory();
+    return ImageSegmenter.createFromOptions(files, {
+      baseOptions: { modelAssetPath: SEGMENTER_MODEL, delegate: "CPU" },
+      runningMode: "VIDEO",
+      outputConfidenceMasks: true,
+      outputCategoryMask: false,
+    });
+  });
+  return performance.now() - started;
+}
+
+/** Person mask of this bitmap as 8-bit alpha. Throws if the mask is missing or malformed. */
+function maskFrom(bitmap, timestamp) {
+  let mask = null;
+  let problem = "no person mask";
+  // The masks are only valid inside this callback: copy them out here. Do not throw from inside the
+  // callback (it is called from WebAssembly); record the problem and throw afterwards.
+  segmenter.segmentForVideo(bitmap, timestamp, (result) => {
+    const confidence = result.confidenceMasks && result.confidenceMasks[0];
+    if (!confidence || !(confidence.width > 0) || !(confidence.height > 0)) return;
+    const values = confidence.getAsFloat32Array();
+    if (values.length !== confidence.width * confidence.height) {
+      problem = "mask size mismatch";
+      return;
+    }
+    const alpha = new Uint8ClampedArray(values.length);
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i];
+      if (!(v >= 0 && v <= 1)) {
+        problem = "mask value out of range";
+        return;
+      }
+      alpha[i] = v * 255;
+    }
+    mask = { width: confidence.width, height: confidence.height, alpha };
+  });
+  if (!mask) throw new Error(problem);
+  return mask;
+}
+
 function eyesFrom(result, width, height) {
   return result.faceLandmarks.map((points) => {
     const eye = {};
@@ -96,7 +146,7 @@ function eyesFrom(result, width, height) {
   });
 }
 
-function detect({ session, frameId, bitmap, timestamp, landmarks }) {
+function detect({ session, frameId, bitmap, timestamp, landmarks, segment }) {
   try {
     // VIDEO mode needs strictly increasing timestamps, also across camera sessions.
     lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
@@ -125,8 +175,24 @@ function detect({ session, frameId, bitmap, timestamp, landmarks }) {
         }
       }
     }
+    let mask = null;
+    let maskError = null;
+    if (segment) {
+      if (!segmenter) {
+        maskError = "not ready";
+      } else {
+        try {
+          mask = maskFrom(bitmap, lastTimestamp);
+        } catch (error) {
+          maskError = String(error?.message || error);
+        }
+      }
+    }
     const inferMs = performance.now() - started;
-    self.postMessage({ type: "result", session, frameId, faces, inferMs, eyes, landmarksError });
+    self.postMessage(
+      { type: "result", session, frameId, faces, inferMs, eyes, landmarksError, mask, maskError },
+      mask ? [mask.alpha.buffer] : [],
+    );
   } catch (error) {
     self.postMessage({ type: "error", stage: "detect", session, frameId, message: String(error?.message || error) });
   } finally {
@@ -150,6 +216,14 @@ self.onmessage = async (event) => {
     } catch (error) {
       landmarker = null;
       self.postMessage({ type: "landmarker-error", message: String(error?.message || error) });
+    }
+  } else if (msg.type === "init-segmenter") {
+    try {
+      const initMs = segmenter ? 0 : await initSegmenter();
+      self.postMessage({ type: "segmenter-ready", initMs });
+    } catch (error) {
+      segmenter = null;
+      self.postMessage({ type: "segmenter-error", message: String(error?.message || error) });
     }
   } else if (msg.type === "detect") {
     if (!detector) {
