@@ -229,3 +229,39 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   /* While streaming, the dock over the preview replaces the control bar. */
   .stage-col:has(.mobile-dock:not([hidden])) .controlbar.desktop { display: none; }
 }
+
+/* ---------- 2-batch: snapshots and effects ---------- */
+.shutter {
+  width: 60px; height: 60px; border-radius: 50%; border: 3px solid var(--text);
+  background: transparent; display: grid; place-items: center; cursor: pointer; padding: 0;
+}
+.shutter::after { content: ""; width: 46px; height: 46px; border-radius: 50%; background: var(--text); }
+.shutter:disabled { opacity: .35; cursor: not-allowed; }
+.shutter:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.small { height: 34px; padding: 0 12px; font-size: 13px; }
+.flash { position: absolute; inset: 0; z-index: 8; background: #fff; opacity: 0; pointer-events: none; animation: flash .45s ease-out; }
+@keyframes flash { 0% { opacity: .5; } 100% { opacity: 0; } }
+.toast {
+  position: absolute; right: 16px; bottom: 16px; z-index: 7; display: flex; align-items: center; gap: 12px;
+  padding: 8px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line-2); box-shadow: 0 12px 32px rgba(0,0,0,.45);
+}
+.toast .thumb { width: 64px; height: 36px; border-radius: 6px; object-fit: cover; background: var(--bg-2); flex: none; }
+.toast b { display: block; font-size: 14px; }
+.toast small { color: var(--muted); font-size: 12.5px; }
+.status-note { margin: -8px 0 0; font-size: 13px; color: var(--muted); }
+.status-note.error { color: var(--warn); }
+.shots-section { padding-top: 0; }
+.shots { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.shots li { position: relative; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; border: 1px solid var(--line-2); background: var(--bg-2); }
+.shots img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.shots .shot-actions { position: absolute; right: 4px; bottom: 4px; display: flex; gap: 4px; }
+.shots .shot-actions a, .shots .shot-actions button {
+  width: 28px; height: 28px; border-radius: 6px; border: 0; background: rgba(11,13,17,.82); color: var(--text);
+  display: grid; place-items: center; cursor: pointer; padding: 0;
+}
+.shots .shot-actions svg { width: 15px; height: 15px; }
+@media (max-width: 900px) {
+  .mobile-dock .left { justify-self: start; }
+  .toast { left: 12px; right: 12px; bottom: 92px; }
+}

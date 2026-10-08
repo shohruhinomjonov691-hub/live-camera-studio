@@ -14,7 +14,9 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 - Real-time face blur: pixelate + Gaussian, Gaussian, or a solid block, in three strengths; optional face boxes on the preview.
 - Fail-closed privacy mode: while face blur is on, the whole preview is hidden when the detector is loading, has failed, is slower than 1 s, or finds no face (see [Privacy](#privacy)). Hiding reduces exposure; it is **not** guaranteed anonymization.
 - Clear states for permission prompt, blocked permission, no/busy camera, camera unplugged, insecure page and detector errors.
-- Glasses, background effects and snapshots are planned for later updates and are not part of this version.
+- Glasses effect: drawn on the eye landmarks of each frame (follows head tilt), adjustable size. With face blur on, the blur is drawn over the glasses.
+- Snapshots: a PNG of the processed preview exactly as shown (blur, glasses, mirror), without face boxes or HUD and without metadata; kept in the tab until removed or the page closes. Available only while a processed frame is on screen.
+- Background effects are planned for a later update.
 
 **Photo upload** (the original Face Blur flow)
 
@@ -27,9 +29,10 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 | Flow | Detector | Where it runs |
 | --- | --- | --- |
 | Live camera | MediaPipe Face Detector (BlazeFace short range), `@mediapipe/tasks-vision` 1.0.1 | Browser, in a module Web Worker |
+| Glasses effect | MediaPipe Face Landmarker (loaded only when the effect is turned on) | Same worker, same frame as the detector |
 | Photo upload | OpenCV frontal-face Haar cascade (reused from `cv_opencv.ipynb` in [computer_vision](https://github.com/shohruhinomjonov691-hub/computer_vision)) | Server, in memory |
 
-MediaPipe files are vendored under `app/static/vendor/mediapipe/` (no CDN). Sources, exact versions, SHA-256 hashes and licenses (Apache-2.0 for the package and the model) are recorded in [`SOURCES.md`](app/static/vendor/mediapipe/SOURCES.md). The model card puts faces looking away, strongly tilted, or further than about 2 m out of scope. No face recognition, training or paid API is involved.
+MediaPipe files are vendored under `app/static/vendor/mediapipe/` (no CDN). Sources, exact versions, SHA-256 hashes and licenses (Apache-2.0 for the package and every model, per the official model cards) are recorded in [`SOURCES.md`](app/static/vendor/mediapipe/SOURCES.md). The model card puts faces looking away, strongly tilted, or further than about 2 m out of scope. No face recognition, training or paid API is involved.
 
 ## Privacy
 
@@ -39,7 +42,9 @@ Live camera:
 - The raw `<video>` is never shown. Each frame is captured once; the detector gets a copy and the blur is applied to that same frame with that frame's boxes — the preview never mixes old boxes with a newer frame.
 - While a result is pending, the preview keeps the last processed frame; after 1 s, on zero faces (with blur on) or on any error, the canvas is cleared.
 - Every camera start is a session. A stream granted after Cancel, and detector results that arrive after Stop, are discarded (tracks stopped, bitmaps closed). Stop, hiding the page, closing it, switching to Photo upload and a camera that ends all stop the tracks and the render loop and clear the canvas.
-- Turning face blur off is a deliberate user choice: the live preview then shows faces unblurred, and the UI says so.
+- Turning face blur off is a deliberate user choice: the live preview then shows faces unblurred, and the UI says so. Turning it back on clears the canvas at once; only a frame captured and processed with blur on reappears.
+- Glasses use landmarks computed on the same captured frame as the face boxes and are drawn before the blur. If the landmarker fails to load or errors, only the effect turns off — face detection and blur keep working.
+- Snapshots copy the visible processed canvas (never the raw video), flipped like the preview when Mirror is on. They are disabled while loading, pending after blur is re-enabled, hidden, in error or stopped. `canvas.toBlob("image/png")` writes only image data (verified: `IHDR`, `IDAT`, `IEND` chunks). Snapshots are not uploaded.
 
 Photo upload:
 
@@ -93,7 +98,7 @@ node --test tests/js/*.test.mjs
 ```
 
 - Python: invalid/corrupt files, size and pixel limits, EXIF orientation, alpha flattening, region parsing and bounds, error codes, security headers (CSP, `Permissions-Policy`, worker CSP, no inline script/style), vendored files served, blur confined to regions, metadata stripping, and that a >1 MB upload opens no file for writing and adds nothing to the temp or project directories.
-- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use), and EN/KO coverage plus the saved language choice.
+- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use, glasses layer order and failures, snapshot source/mirror/disabled states, bitmap cleanup), and EN/KO coverage plus the saved language choice.
 
 These tests use synthetic images and fakes. **They do not measure face-detection quality.**
 
@@ -107,8 +112,9 @@ Measured 2026-10-08 on a MacBook Air (Apple M2, 8 cores, macOS 26.6.2), headless
 | Detector time per frame | p50 7.4 ms, p95 8.7 ms |
 | Capture → displayed latency | p50 7.6 ms, p95 9.0 ms |
 | Detector start (worker, WASM, model) | about 0.1 s after the files are cached |
+| With glasses on (detector + landmarker per frame) | 30 FPS; capture → displayed p95 20.6 ms |
 
-A real webcam on this machine, and phones, have **not** been tested yet.
+The user ran real-webcam smoke tests on their Mac (reported as successful; no numbers recorded). Phones, Safari and Firefox have **not** been tested yet.
 
 ## Detection evaluation — not done yet
 

@@ -46,6 +46,13 @@
         <span class="chip right" id="chip-perf"></span>
       </div>
 
+      <div class="flash" id="snap-flash" hidden></div>
+      <div class="toast" id="snap-toast" hidden role="status">
+        <img id="snap-toast-thumb" class="thumb" alt="">
+        <span><b data-i18n="toast.title">Snapshot ready</b><small id="snap-toast-meta"></small></span>
+        <a id="snap-toast-download" class="btn primary small" href="#" data-i18n="shots.download">Download</a>
+      </div>
+
       <div class="overlay-state" id="ov-idle">
         <div class="overlay-card">
           <div class="state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
@@ -154,8 +161,8 @@
 
       <!-- Mobile controls float over the preview -->
       <div class="mobile-dock" id="mobile-dock" hidden>
-        <span></span>
-        <button type="button" class="btn icon round danger-soft" data-act="stop" data-i18n-aria="ctrl.off" aria-label="Turn off camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 1l22 22M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/></svg></button>
+        <button type="button" class="btn icon left danger-soft" data-act="stop" data-i18n-aria="ctrl.off" aria-label="Turn off camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 1l22 22M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/></svg></button>
+        <button type="button" class="shutter" data-act="snap" disabled data-i18n-aria="dock.snap" aria-label="Take snapshot"></button>
         <button type="button" class="btn icon right" data-act="flip" hidden data-i18n-aria="ctrl.flip" aria-label="Switch camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4-4.6 4.4A9 9 0 0 1 3.5 15"/></svg></button>
       </div>
     </div>
@@ -166,6 +173,7 @@
       <button type="button" class="btn ghost" data-act="flip" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4-4.6 4.4A9 9 0 0 1 3.5 15"/></svg><span data-i18n="ctrl.flip">Switch camera</span></button>
       <span class="spacer"></span>
       <span class="meta" id="cam-meta" data-i18n="ctrl.meta.off">Camera off</span>
+      <button type="button" class="btn primary" data-act="snap" disabled data-i18n-title="snap.disabled"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg><span data-i18n="ctrl.snap">Snapshot</span></button>
     </div>
 
     <p class="notice" role="note">
@@ -215,13 +223,29 @@
     </div>
 
     <div class="panel-body" id="p-effects" hidden>
-      <div class="row"><h3 data-i18n="mode.effects">Effects</h3><span class="tag later" data-i18n="mode.later"></span></div>
-      <p class="fineprint" data-i18n="effects.soon"></p>
+      <h3 data-i18n="effects.title">Face effect</h3>
+      <div class="row">
+        <label for="t-glasses"><span class="label" data-i18n="effects.glasses">Glasses</span><span class="sub" data-i18n="effects.glasses.sub"></span></label>
+        <span class="switch"><input id="t-glasses" type="checkbox"><span></span></span>
+      </div>
+      <p class="status-note" id="effect-status" hidden></p>
+      <div class="field">
+        <div class="row"><label class="label" for="t-glasses-size" data-i18n="effects.size">Size</label><span class="meta" id="t-glasses-size-value">100%</span></div>
+        <input id="t-glasses-size" type="range" min="80" max="120" step="5" value="100">
+      </div>
+      <p class="fineprint" id="effect-blur-note" data-i18n="effects.blurNote"></p>
     </div>
 
     <div class="panel-body" id="p-background" hidden>
       <div class="row"><h3 data-i18n="mode.background">Background</h3><span class="tag later" data-i18n="mode.later"></span></div>
       <p class="fineprint" data-i18n="background.soon"></p>
+    </div>
+
+    <div class="panel-body shots-section">
+      <div class="hr"></div>
+      <div class="row"><h3 data-i18n="shots.title">Snapshots</h3><span class="meta" data-i18n="shots.note"></span></div>
+      <ul class="shots" id="shots"></ul>
+      <p class="fineprint" id="shots-empty" data-i18n="shots.empty">No snapshots yet</p>
     </div>
   </aside>
 </main>

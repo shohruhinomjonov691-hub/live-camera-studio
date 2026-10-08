@@ -8,7 +8,8 @@
 
   const OVERLAYS = ["idle", "insecure", "prompt", "loading", "hidden", "denied", "nocam", "ended", "error"];
   const STREAMING = ["live", "hidden"];
-  const ui = { tab: "camera", camState: "idle", camInfo: null, stats: null };
+  const ui = { tab: "camera", camState: "idle", camInfo: null, stats: null, effect: "off", snapshots: [] };
+  const MAX_SNAPSHOTS = 6;
 
   const video = $("#cam-video");
   const camera = window.createCameraController({
@@ -37,6 +38,10 @@
       ui.stats = stats;
       renderPerf();
     },
+    onEffect: (status) => {
+      ui.effect = status;
+      renderEffect();
+    },
   });
   // For manual measurement in the browser console: liveCamera.stats()
   window.liveCamera = camera;
@@ -55,6 +60,8 @@
   window.i18n.onChange(() => {
     renderCamera();
     renderSettings();
+    renderEffect();
+    renderShots();
   });
 
   // ---------- camera ----------
@@ -77,6 +84,9 @@
     const on = camera.active || streaming || state === "error";
     $("#cam-toggle-label").textContent = t(on ? "ctrl.off" : "ctrl.on");
     $("#cam-toggle").className = on ? "btn danger-soft" : "btn primary";
+    // Snapshots only while a fully processed frame is on screen (not pending, hidden, error or stopped).
+    $$("[data-act=snap]").forEach((b) => (b.disabled = state !== "live"));
+    if (state !== "live") $("#snap-toast").hidden = true;
     renderPerf();
   }
 
@@ -98,6 +108,7 @@
   }
 
   const actions = {
+    snap: takeSnapshot,
     start: () => camera.start(),
     stop: () => camera.stop(),
     restart: () => camera.restartDetector(),
@@ -120,11 +131,115 @@
   }
   $("#cam-mirror").addEventListener("click", () => setMirror($("#cam-mirror").getAttribute("aria-pressed") !== "true"));
 
+  // ---------- snapshots ----------
+  // The snapshot is the visible processed canvas, flipped exactly like the preview when Mirror is on.
+  // canvas.toBlob("image/png") encodes raw pixels: no EXIF, GPS or text metadata; boxes and HUD are not
+  // part of that canvas. Nothing is uploaded; the blob lives in this tab until removed or the page closes.
+  function isMirrored() {
+    return $("#cam-mirror").getAttribute("aria-pressed") === "true";
+  }
+
+  function stamp() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  }
+
+  async function takeSnapshot() {
+    const canvas = camera.snapshot({ mirror: isMirrored() });
+    if (!canvas) return;
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) return;
+    const shot = { url: URL.createObjectURL(blob), name: `live-camera-studio-${stamp()}.png`, w: canvas.width, h: canvas.height };
+    ui.snapshots.unshift(shot);
+    ui.snapshots.splice(MAX_SNAPSHOTS).forEach((old) => URL.revokeObjectURL(old.url));
+    renderShots();
+    const flash = $("#snap-flash");
+    flash.hidden = true;
+    void flash.offsetWidth; // restart the animation
+    flash.hidden = false;
+    $("#snap-toast-thumb").src = shot.url;
+    $("#snap-toast-meta").textContent = t("toast.meta", shot);
+    $("#snap-toast-download").href = shot.url;
+    $("#snap-toast-download").download = shot.name;
+    $("#snap-toast").hidden = false;
+  }
+
+  function renderShots() {
+    const list = $("#shots");
+    list.replaceChildren();
+    $("#shots-empty").hidden = ui.snapshots.length > 0;
+    ui.snapshots.forEach((shot, index) => {
+      const li = document.createElement("li");
+      const img = document.createElement("img");
+      img.src = shot.url;
+      img.alt = "";
+      const actions = document.createElement("span");
+      actions.className = "shot-actions";
+      const download = document.createElement("a");
+      download.href = shot.url;
+      download.download = shot.name;
+      download.setAttribute("aria-label", t("shots.downloadAria", { n: index + 1 }));
+      download.append(icon("M12 3v12M7 10l5 5 5-5M5 21h14"));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.setAttribute("aria-label", t("shots.removeAria", { n: index + 1 }));
+      remove.append(icon("M18 6L6 18M6 6l12 12"));
+      remove.addEventListener("click", () => {
+        ui.snapshots = ui.snapshots.filter((s) => s !== shot);
+        URL.revokeObjectURL(shot.url);
+        if ($("#snap-toast-download").href === shot.url) $("#snap-toast").hidden = true;
+        renderShots();
+      });
+      actions.append(download, remove);
+      li.append(img, actions);
+      list.append(li);
+    });
+  }
+
+  function icon(d) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+    return svg;
+  }
+
+  // ---------- glasses effect ----------
+  function renderEffect() {
+    const s = camera.settings;
+    $("#t-glasses").checked = s.glasses;
+    $("#t-glasses-size").value = String(s.glassesSize);
+    $("#t-glasses-size-value").textContent = `${s.glassesSize}%`;
+    $("#effect-blur-note").hidden = !(s.glasses && s.blurOn);
+    const status = $("#effect-status");
+    const message = s.glasses ? { loading: "effects.loading", error: "effects.error" }[ui.effect] : null;
+    status.hidden = !message;
+    status.classList.toggle("error", ui.effect === "error");
+    if (message) status.textContent = t(message);
+  }
+  $("#t-glasses").addEventListener("change", (e) => {
+    camera.setSettings({ glasses: e.target.checked });
+    renderEffect();
+  });
+  $("#t-glasses-size").addEventListener("input", (e) => {
+    camera.setSettings({ glassesSize: Number(e.target.value) });
+    renderEffect();
+  });
+
   // Hidden page, closed page, device sleep: release the camera and stop the loop.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden" && camera.active) camera.stop("hidden");
   });
-  window.addEventListener("pagehide", () => camera.active && camera.stop());
+  window.addEventListener("pagehide", () => {
+    if (camera.active) camera.stop();
+    ui.snapshots.forEach((shot) => URL.revokeObjectURL(shot.url));
+    ui.snapshots = [];
+  });
 
   // ---------- privacy settings ----------
   function renderSettings() {
@@ -139,6 +254,7 @@
   $("#t-blur").addEventListener("change", (e) => {
     camera.setSettings({ blurOn: e.target.checked });
     renderSettings();
+    renderEffect();
   });
   $("#t-boxes").addEventListener("change", (e) => camera.setSettings({ showBoxes: e.target.checked }));
   $$("[data-method]").forEach((p) =>
@@ -161,5 +277,7 @@
 
   window.i18n.apply();
   renderSettings();
+  renderEffect();
+  renderShots();
   renderCamera();
 })();

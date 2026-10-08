@@ -97,7 +97,7 @@ def test_vendored_mediapipe_files_are_served(client):
     wasm = client.get(f"{base}/tasks-vision-1.0.1/wasm/vision_wasm_module_internal.wasm")
     assert wasm.status_code == 200 and wasm.headers["content-type"] == "application/wasm"
     for path in ("tasks-vision-1.0.1/vision_bundle.mjs", "tasks-vision-1.0.1/wasm/vision_wasm_module_internal.js",
-                 "models/blaze_face_short_range.tflite", "LICENSE", "SOURCES.md"):
+                 "models/blaze_face_short_range.tflite", "models/face_landmarker.task", "LICENSE", "SOURCES.md"):
         assert client.get(f"{base}/{path}").status_code == 200, path
 
 
@@ -237,3 +237,22 @@ def test_large_upload_creates_no_files_and_logs_no_image_data(client, monkeypatc
         message = record.getMessage()
         assert len(message) < 1000
         assert "�" not in message and "JFIF" not in message
+
+
+def test_vendored_files_match_sources_hashes():
+    import hashlib
+    import re
+
+    vendor = PROJECT_DIR / "app" / "static" / "vendor" / "mediapipe"
+    sources = (vendor / "SOURCES.md").read_text()
+    files = [
+        "tasks-vision-1.0.1/vision_bundle.mjs",
+        "tasks-vision-1.0.1/wasm/vision_wasm_module_internal.js",
+        "tasks-vision-1.0.1/wasm/vision_wasm_module_internal.wasm",
+        "models/blaze_face_short_range.tflite",
+        "models/face_landmarker.task",
+        "LICENSE",
+    ]
+    for path in files:
+        digest = hashlib.sha256((vendor / path).read_bytes()).hexdigest()
+        assert re.search(rf"`{digest}`", sources), f"{path}: SHA-256 {digest} not recorded in SOURCES.md"

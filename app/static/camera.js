@@ -11,6 +11,9 @@
 // - Every camera start opens a session; late streams, late frames and late detector results from an older
 //   session are discarded (and their tracks/bitmaps released).
 // - Frames never leave the browser: this file makes no network requests.
+// - Effects (glasses) use landmarks of that same frame and are drawn before the blur, so hiding faces is
+//   always the last layer. A landmarker or effect failure only turns the effect off; blur keeps working.
+// - Snapshots are copied from the visible, fully processed canvas only — never from the raw video.
 //
 // The controller takes its browser dependencies as `env`, so tests can drive it with fakes.
 (function (global) {
@@ -68,6 +71,54 @@
     ctx.restore();
   }
 
+  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+  function lensPath(ctx, x, y, w, h, r) {
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /** Draw glasses on one face, aligned to its eye corners (frame coordinates). `scale` is 0.8–1.2. */
+  function drawGlasses(ctx, eye, scale) {
+    const right = mid(eye.rOuter, eye.rInner);
+    const left = mid(eye.lInner, eye.lOuter);
+    const dist = Math.hypot(left.x - right.x, left.y - right.y);
+    if (!(dist > 4)) return; // too small or invalid landmarks: no effect for this face
+    const lensW = dist * 0.8 * scale;
+    const lensH = lensW * 0.66;
+    ctx.save();
+    try {
+      ctx.translate((right.x + left.x) / 2, (right.y + left.y) / 2);
+      ctx.rotate(Math.atan2(left.y - right.y, left.x - right.x)); // follows head tilt
+      ctx.lineWidth = Math.max(2, dist * 0.08 * scale);
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#111318";
+      ctx.fillStyle = "rgba(20, 24, 32, 0.45)";
+      for (const cx of [-dist / 2, dist / 2]) {
+        ctx.beginPath();
+        lensPath(ctx, cx - lensW / 2, -lensH / 2, lensW, lensH, lensH * 0.35);
+        ctx.fill();
+        ctx.stroke();
+      }
+      const inner = dist / 2 - lensW / 2;
+      const outer = dist / 2 + lensW / 2;
+      ctx.beginPath(); // bridge
+      ctx.moveTo(-inner, -lensH * 0.15);
+      ctx.quadraticCurveTo(0, -lensH * 0.45, inner, -lensH * 0.15);
+      ctx.moveTo(-outer, -lensH * 0.25); // temples
+      ctx.lineTo(-outer - dist * 0.22, -lensH * 0.32);
+      ctx.moveTo(outer, -lensH * 0.25);
+      ctx.lineTo(outer + dist * 0.22, -lensH * 0.32);
+      ctx.stroke();
+    } finally {
+      ctx.restore();
+    }
+  }
+
   function stopTracks(stream) {
     stream.getTracks().forEach((track) => track.stop());
   }
@@ -102,7 +153,13 @@
   }
 
   function createCameraController(env) {
-    const settings = { blurOn: true, method: "pixel", strength: 3, showBoxes: true, facingMode: "user" };
+    const settings = {
+      blurOn: true, method: "pixel", strength: 3, showBoxes: true, facingMode: "user",
+      glasses: false, glassesSize: 100,
+    };
+    // Face landmarker for the glasses effect: "off" | "loading" | "ready" | "error". Independent of blur.
+    let landmarker = "off";
+    let viewReady = false; // the visible canvas holds a fully processed frame
     let camSession = 0;
     let stream = null;
     let worker = null;
@@ -132,6 +189,7 @@
     }
 
     function clearView() {
+      viewReady = false;
       clearCanvas(env.view);
       clearCanvas(env.overlay);
       clearCanvas(buffer);
@@ -155,7 +213,20 @@
       worker.onmessage = (event) => onWorkerMessage(event.data);
       worker.onerror = (event) => onWorkerFailure(event && event.message);
       worker.postMessage({ type: "init" });
+      if (settings.glasses) requestLandmarker();
       return workerReady;
+    }
+
+    function setLandmarker(next, message = null) {
+      landmarker = next;
+      if (env.onEffect) env.onEffect(next, message);
+    }
+
+    /** Load the landmarker in the worker (once). Without a worker it is requested when one is created. */
+    function requestLandmarker() {
+      if (!worker || landmarker === "loading" || landmarker === "ready") return;
+      setLandmarker("loading");
+      worker.postMessage({ type: "init-landmarker" });
     }
 
     function resetWorker() {
@@ -164,6 +235,7 @@
       workerReady = null;
       detectorUp = false;
       pendingInit = null;
+      if (landmarker !== "off") setLandmarker("off"); // a new worker loads it again
     }
 
     function onWorkerMessage(msg) {
@@ -171,6 +243,10 @@
         detectorUp = true;
         if (pendingInit) pendingInit.resolve(msg.initMs);
         pendingInit = null;
+      } else if (msg.type === "landmarker-ready") {
+        if (worker) setLandmarker("ready");
+      } else if (msg.type === "landmarker-error") {
+        setLandmarker("error", msg.message);
       } else if (msg.type === "result") {
         onResult(msg);
       } else if (msg.type === "error") {
@@ -307,7 +383,10 @@
 
     async function capture() {
       // The deadline runs from the start of capture, so a stuck createImageBitmap also hides the preview.
-      const current = { id: ++frameId, session: camSession, frame: null, copy: null, capturedAt: env.now(), timer: null };
+      const current = {
+        id: ++frameId, session: camSession, frame: null, copy: null, capturedAt: env.now(), timer: null,
+        landmarks: settings.glasses && landmarker === "ready",
+      };
       job = current;
       current.timer = env.setTimeout(() => onDeadline(current), PENDING_TIMEOUT_MS);
       // After every await: is this still the frame in the pipeline (no Stop, timeout or newer frame)?
@@ -333,7 +412,10 @@
         return;
       }
       worker.postMessage(
-        { type: "detect", session: current.session, frameId: current.id, bitmap: current.copy, timestamp: env.now() },
+        {
+          type: "detect", session: current.session, frameId: current.id, bitmap: current.copy,
+          timestamp: env.now(), landmarks: current.landmarks,
+        },
         [current.copy],
       );
       current.copy = null; // transferred: the worker closes it
@@ -357,12 +439,15 @@
       env.clearTimeout(current.timer);
 
       const faces = msg.faces || [];
+      if (current.landmarks && msg.landmarksError) setLandmarker("error", msg.landmarksError);
+      // Landmarks of this very frame, only if the effect is still on.
+      const eyes = current.landmarks && settings.glasses && Array.isArray(msg.eyes) ? msg.eyes : [];
       try {
         if (settings.blurOn && faces.length === 0) {
           clearView();
           setState("hidden", { why: "noface" });
         } else {
-          compose(current.frame, faces);
+          compose(current.frame, faces, eyes);
           setState("live", { faces: faces.length, blurOn: settings.blurOn });
         }
       } catch (error) {
@@ -375,7 +460,7 @@
       schedule();
     }
 
-    function compose(frame, faces) {
+    function compose(frame, faces, eyes = []) {
       const width = frame.width;
       const height = frame.height;
       for (const canvas of [buffer, env.view, env.overlay]) {
@@ -385,7 +470,16 @@
       const bctx = buffer.getContext("2d");
       bctx.clearRect(0, 0, width, height);
       bctx.drawImage(frame, 0, 0);
+      if (eyes.length) {
+        // An effect error must never cost the blur: turn the effect off and carry on.
+        try {
+          eyes.forEach((eye) => drawGlasses(bctx, eye, settings.glassesSize / 100));
+        } catch (error) {
+          setLandmarker("error", String((error && error.message) || error));
+        }
+      }
       const boxes = faces.map((face) => boxFor(face, width, height)).filter(Boolean);
+      // Hiding faces is the last layer, over any effect.
       if (settings.blurOn) boxes.forEach((box) => obscure(bctx, scratch, box, settings.method, settings.strength));
 
       const vctx = env.view.getContext("2d");
@@ -400,6 +494,29 @@
         boxes.forEach((box) => octx.strokeRect(box.x, box.y, box.w, box.h));
       }
       perf.frameSize = { w: width, h: height };
+      viewReady = true;
+    }
+
+    function canSnapshot() {
+      return Boolean(stream) && state === "live" && viewReady;
+    }
+
+    /**
+     * Copy the visible processed canvas (no boxes, no HUD) into a new canvas, flipped like the preview when
+     * `mirror` is set. Returns null when there is no fully processed frame on screen.
+     */
+    function snapshot({ mirror = false } = {}) {
+      if (!canSnapshot()) return null;
+      const out = env.makeCanvas();
+      out.width = env.view.width;
+      out.height = env.view.height;
+      const ctx = out.getContext("2d");
+      if (mirror) {
+        ctx.translate(out.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(env.view, 0, 0);
+      return out;
     }
 
     function record(inferMs, latencyMs) {
@@ -445,6 +562,8 @@
       setSettings(partial) {
         const blurTurnedOn = partial.blurOn === true && !settings.blurOn;
         Object.assign(settings, partial);
+        // Turning the effect on (again) loads the landmarker, or retries it after an error.
+        if (partial.glasses === true && landmarker !== "ready") requestLandmarker();
         if (blurTurnedOn) {
           // Nothing captured or drawn while blur was off may stay visible: wipe it and show only frames
           // that are captured and processed with blur on.
@@ -466,9 +585,14 @@
         return Boolean(stream) || state === "prompt" || state === "loading";
       },
       stats,
+      snapshot,
+      canSnapshot,
+      get effect() {
+        return landmarker;
+      },
     };
   }
 
   global.createCameraController = createCameraController;
-  global.liveCameraInternals = { boxFor, obscure, PENDING_TIMEOUT_MS };
+  global.liveCameraInternals = { boxFor, obscure, drawGlasses, PENDING_TIMEOUT_MS };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -161,6 +161,14 @@ Commitlar `fix:` prefiksi bilan. Boshlanish sharti: Face Blur MVP va shu reja Co
 - O‘lchov (Apple M2, headless Chrome 154, fake kamera = test portreti, real webcam emas): 30 FPS (manba 30 fps), detector p95 8.7 ms, latency p95 9.0 ms.
 - Snapshot, ko‘zoynak, fon — bu batchga kirmadi.
 
+## 2-batch natijasi (2026-10-08, `develop`)
+
+- **Vendor:** `face_landmarker.task` (`float16/1`, SHA-256 `64184e22…`); bundle ichidagi uchala model (BlazeFace, FaceMesh V2, Blendshape V2) model card’lari — Apache 2.0. `SOURCES.md` va hash testi.
+- **Worker:** landmarker faqat ko‘zoynak yoqilganda yuklanadi; detector bilan aynan bitta bitmap’da. MediaPipe har task’dan keyin `self.ModuleFactory`ni tozalaydi, module worker’da loader qayta bajarilmaydi — shuning uchun worker loader’ning default export’ini import qilib, har task oldidan qayta o‘rnatadi (brauzerda tekshirilgan).
+- **Qatlamlar:** kadr → ko‘zoynak (ko‘z burchaklari 33/133/362/263, bosh egilishi bo‘yicha burilish) → yuz blur (oxirgi). Landmarker yuklanmasa yoki xato bersa faqat effekt o‘chadi; ko‘zoynak chizishdagi xato ham blur’ni o‘chirmaydi.
+- **Snapshot:** ko‘rinayotgan ishlangan canvas’dan (xom video emas), Mirror yoqilgan bo‘lsa preview kabi aylantiriladi; bbox/HUD yo‘q; PNG chunk’lari faqat `IHDR/IDAT/IEND`. Tugma faqat `live` holatida yoqiq (loading, blur qayta yoqilgandan keyingi pending, hidden, error, stopped — o‘chiq). Kadrlar orasidagi qisqa kutishda ekranda oxirgi ishlangan kadr turadi va u snapshot qilinadi.
+- **O‘lchov (fake kamera, Apple M2, headless Chrome 154):** ko‘zoynak bilan 30 FPS, latency p95 20.6 ms; ko‘zoynaksiz p95 ~9 ms.
+
 ## Ochiq savollar
 
 - Koreyscha tarjima — Claude qoralamasi, ona tilida so‘zlashuvchi tekshiruvi kerak.
