@@ -149,10 +149,11 @@
       <div class="overlay-state" id="ov-error" hidden>
         <div class="overlay-card">
           <div class="state-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
-          <h2 data-i18n="error.title">Face detection stopped</h2>
-          <p data-i18n="error.body"></p>
+          <h2 id="error-title" data-i18n="error.title">Face detection stopped</h2>
+          <p id="error-body" data-i18n="error.body"></p>
+          <p class="fineprint" id="error-code"></p>
           <div class="actions">
-            <button type="button" class="btn primary" data-act="restart" data-i18n="error.cta">Restart detector</button>
+            <button type="button" class="btn primary" id="error-cta" data-act="restart" data-i18n="error.cta">Restart detector</button>
             <button type="button" class="btn danger-soft" data-act="stop" data-i18n="error.alt">Turn off camera</button>
           </div>
           <p class="fineprint" data-i18n="error.fine"></p>

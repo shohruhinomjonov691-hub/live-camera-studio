@@ -319,7 +319,7 @@ test("a detector error clears the canvas and shows the error state", async () =>
   msg = h.lastDetect();
   const frame = h.captured.at(-1);
   h.worker.reply({ type: "error", stage: "detect", session: msg.session, frameId: msg.frameId, message: "boom" });
-  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "detector" }]);
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "detector", name: "Error" }]);
   assert.equal(lastOp(h.env.view), "clearRect");
   assert.equal(frame.closed, true);
   assert.equal(h.pendingFrames(), 0);
@@ -334,7 +334,7 @@ test("a detector that fails to load leads to the error state, not a raw preview"
   h.worker.reply({ type: "error", stage: "init", message: "wasm blocked" });
   await flush();
   await flush();
-  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "detector" }]);
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "load", name: "Error" }]);
   assert.equal(viewDraws(h.env.view).length, 0);
   assert.equal(h.worker.terminated, true);
 });
@@ -496,7 +496,7 @@ test("[4] a compose error closes the frame and fails closed", async () => {
   h.env.view.throwOn = "drawImage";
   h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
   assert.equal(frame.closed, true);
-  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "render" }]);
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "render", name: "Error" }]);
   assert.ok(cleared(h.env.view) && cleared(h.env.overlay) && cleared(h.buffer()));
   assert.equal(h.pendingFrames(), 0);
   h.env.view.throwOn = null;
@@ -593,7 +593,7 @@ test("[r2] a detect error for the current frame still fails closed", async () =>
   await h.runFrame();
   const msg = h.lastDetect();
   h.worker.reply({ type: "error", stage: "detect", session: msg.session, frameId: msg.frameId, message: "boom" });
-  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "detector" }]);
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "detector", name: "Error" }]);
 });
 
 test("[r3] every box size is either really reduced or filled solid (incl. 1×1 and thin boxes)", () => {
@@ -1371,4 +1371,77 @@ test("[d2] a stale mask error (timed-out frame or old mode) changes nothing", as
   assert.equal(h.camera.background.segmenter, "ready");
   await bgFrame(h);
   assert.equal(h.state(), "live");
+});
+
+// ---------- iPhone Chrome: the failing stage and the error's class name are reported ----------
+
+async function startUntilStream(h) {
+  h.camera.start();
+  await flush();
+  h.gum().resolve(fakeStream());
+  await flush();
+}
+
+test("[ios] a detector that fails to load reports stage load and the error class, never a raw preview", async () => {
+  const h = setup();
+  await startUntilStream(h);
+  h.worker.reply({ type: "error", stage: "init", message: "document is not defined", name: "ReferenceError" });
+  await flush();
+  await flush();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "load", name: "ReferenceError" }]);
+  assert.equal(viewDraws(h.env.view).length, 0);
+  assert.equal(h.pendingFrames(), 0);
+});
+
+test("[ios] a detector that never answers reports load / TimeoutError", async () => {
+  const h = setup();
+  await startUntilStream(h);
+  h.fireTimers(20000);
+  await flush();
+  await flush();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "load", name: "TimeoutError" }]);
+  assert.equal(viewDraws(h.env.view).length, 0);
+});
+
+test("[ios] a video.play() rejection is a video error, not a detector error, and releases the camera", async () => {
+  const h = setup();
+  h.env.video.play = async () => {
+    throw Object.assign(new Error("play blocked"), { name: "NotAllowedError" });
+  };
+  h.camera.start();
+  await flush();
+  const stream = fakeStream();
+  h.gum().resolve(stream);
+  await flush();
+  await flush();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "play", name: "NotAllowedError" }]);
+  assert.equal(stream.track.stopped, true, "camera released");
+  assert.equal(h.env.video.srcObject, null);
+  assert.equal(viewDraws(h.env.view).length, 0);
+});
+
+test("[ios] an unexpected getUserMedia error is a camera error with its class name", async () => {
+  const h = setup();
+  h.camera.start();
+  await flush();
+  h.gum().reject(Object.assign(new Error("x"), { name: "TypeError" }));
+  await flush();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "camera", name: "TypeError" }]);
+});
+
+test("[ios] error names are reduced to a plain identifier (no message text reaches the UI)", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "error", stage: "detect", session: msg.session, frameId: msg.frameId, message: "m", name: "<b>x</b> y" });
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "detector", name: "Error" }]);
+});
+
+test("[ios] a crashed worker reports stage worker", async () => {
+  const h = setup();
+  await goLive(h);
+  h.worker.onerror({ message: "crash" });
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "WorkerError" }]);
+  assert.ok(cleared(h.env.view));
 });

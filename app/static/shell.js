@@ -8,6 +8,16 @@
 
   const OVERLAYS = ["idle", "insecure", "prompt", "loading", "hidden", "denied", "nocam", "ended", "error"];
   const STREAMING = ["live", "hidden"];
+  // Error card per failed stage: [title, body, button] keys and the stage code shown with the error's class name,
+  // so a report tells a camera, video, detector-loading and detector failure apart.
+  const ERROR_CARDS = {
+    camera: { keys: ["error.title.camera", "error.body.camera", "error.cta.retry"], stage: "camera" },
+    play: { keys: ["error.title.play", "error.body.play", "error.cta.retry"], stage: "video" },
+    load: { keys: ["error.title.load", "error.body.load", "error.cta"], stage: "detector-load" },
+    detector: { keys: ["error.title", "error.body", "error.cta"], stage: "detector-run" },
+    worker: { keys: ["error.title", "error.body", "error.cta"], stage: "worker" },
+    render: { keys: ["error.title", "error.body", "error.cta"], stage: "render" },
+  };
   // effectAlert: the glasses effect failed (and blur came back). Cleared only by Dismiss or a retry.
   const ui = {
     tab: "camera", camState: "idle", camInfo: null, stats: null, effect: "off", effectAlert: false, snapshots: [],
@@ -103,6 +113,15 @@
         bgInvalid: "hidden.bgInvalid",
       }[info.why] || "hidden.noface";
     $("#hidden-why").textContent = t(why);
+    if (state === "error") {
+      const card = ERROR_CARDS[info.kind] || ERROR_CARDS.detector;
+      ["#error-title", "#error-body", "#error-cta"].forEach((selector, i) => {
+        const node = $(selector);
+        node.dataset.i18n = card.keys[i]; // a later language switch keeps the right text
+        node.textContent = t(card.keys[i]);
+      });
+      $("#error-code").textContent = t("error.code", { stage: card.stage, name: info.name || "Error" });
+    }
 
     $("#hud").hidden = !streaming;
     $("#mobile-dock").hidden = !streaming;

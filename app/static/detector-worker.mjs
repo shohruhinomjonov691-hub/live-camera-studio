@@ -12,7 +12,8 @@
 //      {type: "result", session, frameId, faces: [{x, y, w, h, score}], inferMs,
 //       eyes: [{rOuter, rInner, lInner, lOuter}] | null, landmarksError: string | null,
 //       mask: {width, height, alpha: Uint8ClampedArray (transferred)} | null, maskError: string | null}
-//      {type: "error", stage: "init" | "detect", session?, frameId?, message}
+//      {type: "error", stage: "init" | "detect", session?, frameId?, message, name}
+//      name: the error's class name only (e.g. "ReferenceError"), shown in the UI as a diagnostic code
 //
 // Detection, landmarks and segmentation run on the same bitmap, so the person mask always belongs to the
 // frame it is applied to. A landmarker or segmenter failure never fails the detection: the result then
@@ -44,6 +45,20 @@ function provideModuleFactory() {
   self.ModuleFactory = ModuleFactory;
 }
 
+// MediaPipe needs a canvas for WebGL. Without one it picks OffscreenCanvas from the user agent: on WebKit only
+// when the UA has "Version/17+" (Safari). Chrome on iOS is WebKit but its UA has "CriOS" and no "Version/", so
+// MediaPipe falls back to document.createElement("canvas") — and a worker has no document ("document is not
+// defined"). Pass our own OffscreenCanvas, which is what MediaPipe itself uses on desktop and in Safari 17+.
+function glCanvas() {
+  return typeof OffscreenCanvas === "undefined" ? undefined : new OffscreenCanvas(1, 1);
+}
+
+/** Class name of an error (e.g. "TypeError"): safe to show; the message is not sent to the page's UI. */
+function errorName(error) {
+  const name = error && error.name;
+  return typeof name === "string" && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : "Error";
+}
+
 // Task creation is async and each task consumes (and clears) self.ModuleFactory, so two creations must
 // never overlap — e.g. the detector and the landmarker when the glasses effect is already on. Queue them.
 let taskQueue = Promise.resolve();
@@ -70,6 +85,7 @@ async function initDetector() {
     provideModuleFactory();
     return FaceDetector.createFromOptions(files, {
       baseOptions: { modelAssetPath: DETECTOR_MODEL, delegate: "CPU" },
+      canvas: glCanvas(),
       runningMode: "VIDEO",
       minDetectionConfidence: MIN_CONFIDENCE,
     });
@@ -84,6 +100,7 @@ async function initLandmarker() {
     provideModuleFactory();
     return FaceLandmarker.createFromOptions(files, {
       baseOptions: { modelAssetPath: LANDMARKER_MODEL, delegate: "CPU" },
+      canvas: glCanvas(),
       runningMode: "VIDEO",
       numFaces: MAX_FACES_WITH_GLASSES,
       outputFaceBlendshapes: false,
@@ -100,6 +117,7 @@ async function initSegmenter() {
     provideModuleFactory();
     return ImageSegmenter.createFromOptions(files, {
       baseOptions: { modelAssetPath: SEGMENTER_MODEL, delegate: "CPU" },
+      canvas: glCanvas(),
       runningMode: "VIDEO",
       outputConfidenceMasks: true,
       outputCategoryMask: false,
@@ -195,7 +213,9 @@ function detect({ session, frameId, bitmap, timestamp, landmarks, segment }) {
       mask ? [mask.alpha.buffer] : [],
     );
   } catch (error) {
-    self.postMessage({ type: "error", stage: "detect", session, frameId, message: String(error?.message || error) });
+    self.postMessage({
+      type: "error", stage: "detect", session, frameId, message: String(error?.message || error), name: errorName(error),
+    });
   } finally {
     bitmap.close();
   }
@@ -208,7 +228,7 @@ self.onmessage = async (event) => {
       const initMs = await initDetector();
       self.postMessage({ type: "ready", initMs });
     } catch (error) {
-      self.postMessage({ type: "error", stage: "init", message: String(error?.message || error) });
+      self.postMessage({ type: "error", stage: "init", message: String(error?.message || error), name: errorName(error) });
     }
   } else if (msg.type === "init-landmarker") {
     try {

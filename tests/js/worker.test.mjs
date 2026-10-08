@@ -9,10 +9,18 @@ import vm from "node:vm";
 const SOURCE = readFileSync(new URL("../../app/static/detector-worker.mjs", import.meta.url), "utf8");
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function loadWorker({ failLandmarker = false, maskValues = null } = {}) {
+function loadWorker({ failLandmarker = false, maskValues = null, offscreen = true, iosChromeUA = false } = {}) {
   const posted = [];
   const created = [];
+  const options = [];
   const context = { console, performance, posted, transfers: [] };
+  if (offscreen) {
+    context.OffscreenCanvas = class OffscreenCanvas {
+      constructor(width, height) {
+        Object.assign(this, { width, height });
+      }
+    };
+  }
   context.self = context;
   context.postMessage = (msg, transfer) => {
     posted.push(msg);
@@ -22,8 +30,12 @@ function loadWorker({ failLandmarker = false, maskValues = null } = {}) {
   // Like the bundle: wait for the loader, require self.ModuleFactory, consume it and clear it.
   const closed = [];
   const task = (kind) => ({
-    async createFromOptions() {
+    async createFromOptions(files, taskOptions) {
+      options.push([kind, taskOptions]);
       await tick();
+      // Like the bundle on Chrome for iOS (UA without "Version/"): no canvas given -> document.createElement,
+      // which does not exist in a worker.
+      if (iosChromeUA && !taskOptions.canvas) throw new ReferenceError("document is not defined");
       if (kind === "landmarker" && failLandmarker) throw new Error("model blocked");
       if (!context.ModuleFactory) throw new Error("ModuleFactory not set.");
       context.ModuleFactory = undefined;
@@ -61,7 +73,7 @@ function loadWorker({ failLandmarker = false, maskValues = null } = {}) {
   vm.createContext(context);
   vm.runInContext(code, context);
   const send = (data) => context.onmessage({ data });
-  return { posted, created, closed, send, context };
+  return { posted, created, closed, send, context, options };
 }
 
 async function settle() {
@@ -185,4 +197,28 @@ test("[d2] init-segmenter without recreate keeps a working instance", async () =
   await settle();
   assert.deepEqual(w.closed, []);
   assert.deepEqual(w.created, ["detector", "segmenter"]);
+});
+
+// ---------- iPhone Chrome: MediaPipe must not fall back to document.createElement in the worker ----------
+
+test("[ios] every task gets its own OffscreenCanvas, so Chrome on iOS loads detector, landmarker and segmenter", async () => {
+  const w = loadWorker({ iosChromeUA: true });
+  w.send({ type: "init" });
+  w.send({ type: "init-landmarker" });
+  w.send({ type: "init-segmenter" });
+  await settle();
+  assert.deepEqual(w.posted.map((m) => m.type), ["ready", "landmarker-ready", "segmenter-ready"]);
+  const canvases = w.options.map(([, o]) => o.canvas);
+  assert.ok(canvases.every((c) => c instanceof w.context.OffscreenCanvas), "OffscreenCanvas passed");
+  assert.equal(new Set(canvases).size, 3, "one canvas per task");
+});
+
+test("[ios] without OffscreenCanvas nothing is passed (MediaPipe decides) and a load failure carries the error class", async () => {
+  const w = loadWorker({ offscreen: false, iosChromeUA: true });
+  w.send({ type: "init" });
+  await settle();
+  assert.equal(w.options[0][1].canvas, undefined);
+  const error = w.posted.find((m) => m.type === "error");
+  assert.equal(error.stage, "init");
+  assert.equal(error.name, "ReferenceError");
 });

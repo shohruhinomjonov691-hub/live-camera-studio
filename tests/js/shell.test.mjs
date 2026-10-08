@@ -477,3 +477,38 @@ test("[d2] a runtime mask error shows the background error with Retry; Retry rec
   assert.equal(retry.recreate, true);
   assert.equal(h.el("#bg-retry").hidden, true, "loading while it is rebuilt");
 });
+
+// ---------- iPhone Chrome: the error card names the failed stage ----------
+
+test("[ios] a detector load failure shows its own card and code (EN and KO), not the generic detector text", async () => {
+  const h = loadShell({ realCamera: true });
+  h.el("#cam-toggle").listeners.click.forEach((fn) => fn());
+  await flush();
+  await flush();
+  h.media.workers.at(-1).onmessage({ data: { type: "error", stage: "init", message: "document is not defined", name: "ReferenceError" } });
+  await flush();
+  await flush();
+  assert.equal(h.el("#ov-error").hidden, false);
+  assert.equal(h.el("#error-title").textContent, EN("error.title.load"));
+  assert.equal(h.el("#error-body").textContent, EN("error.body.load"));
+  assert.equal(h.el("#error-code").textContent, "Error code: detector-load / ReferenceError");
+  assert.ok(!h.el("#error-code").textContent.includes("document"), "the message text is not shown");
+
+  h.context.i18n.setLang("ko");
+  assert.equal(h.el("#error-title").textContent, "얼굴 감지기를 불러오지 못했습니다");
+  assert.equal(h.el("#error-title").dataset.i18n, "error.title.load");
+  assert.equal(h.el("#error-code").textContent, "오류 코드: detector-load / ReferenceError");
+});
+
+test("[ios] a video.play() failure shows the video card with Try again", async () => {
+  const h = loadShell({ realCamera: true });
+  h.context.document.querySelector("#cam-video").play = () => Promise.reject(Object.assign(new Error("x"), { name: "NotAllowedError" }));
+  h.el("#cam-toggle").listeners.click.forEach((fn) => fn());
+  await flush();
+  await flush();
+  await flush();
+  assert.equal(h.el("#error-title").textContent, EN("error.title.play"));
+  assert.equal(h.el("#error-cta").textContent, EN("error.cta.retry"));
+  assert.equal(h.el("#error-code").textContent, "Error code: video / NotAllowedError");
+  assert.equal(h.track.stopped, true);
+});

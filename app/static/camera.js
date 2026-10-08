@@ -158,6 +158,15 @@
     stream.getTracks().forEach((track) => track.stop());
   }
 
+  /**
+   * Class name of an error (e.g. "NotAllowedError"), shown in the error card as a diagnostic code. Only a plain
+   * identifier is kept: no message text, nothing from the frame.
+   */
+  function errorName(error) {
+    const name = error && error.name;
+    return typeof name === "string" && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : "Error";
+  }
+
   function errorState(error) {
     const name = error && error.name;
     if (name === "NotAllowedError" || name === "SecurityError") return "denied";
@@ -167,7 +176,7 @@
 
   function withTimeout(promise, ms, env) {
     return new Promise((resolve, reject) => {
-      const timer = env.setTimeout(() => reject(new Error("timeout")), ms);
+      const timer = env.setTimeout(() => reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })), ms);
       promise.then(
         (value) => {
           env.clearTimeout(timer);
@@ -344,20 +353,20 @@
         onResult(msg);
       } else if (msg.type === "error") {
         if (msg.stage === "init") {
-          if (pendingInit) pendingInit.reject(new Error(msg.message));
+          if (pendingInit) pendingInit.reject(Object.assign(new Error(msg.message), { name: errorName(msg) }));
           pendingInit = null;
         } else if (msg.session === camSession && job && msg.frameId === job.id) {
           // Errors for a frame that already timed out (or any older frame) are ignored like its result.
-          fail("detector");
+          fail("detector", errorName(msg));
         }
       }
     }
 
     function onWorkerFailure(message) {
-      if (pendingInit) pendingInit.reject(new Error(message || "worker error"));
+      if (pendingInit) pendingInit.reject(Object.assign(new Error(message || "worker error"), { name: "WorkerError" }));
       pendingInit = null;
       resetWorker();
-      if (stream) fail("detector");
+      if (stream) fail("worker", "WorkerError");
     }
 
     // ---------- camera ----------
@@ -378,7 +387,10 @@
           video: { facingMode: settings.facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
         });
       } catch (error) {
-        if (id === camSession) setState(errorState(error), { name: error && error.name });
+        if (id === camSession) {
+          const next = errorState(error);
+          setState(next, next === "error" ? { kind: "camera", name: errorName(error) } : { name: error && error.name });
+        }
         return;
       }
       if (id !== camSession) {
@@ -395,7 +407,7 @@
       } catch (error) {
         if (id !== camSession) return;
         stop();
-        setState("error", { kind: "play" });
+        setState("error", { kind: "play", name: errorName(error) });
         return;
       }
       if (id !== camSession) return;
@@ -405,7 +417,7 @@
       } catch (error) {
         if (id !== camSession) return;
         resetWorker();
-        fail("detector");
+        fail("load", errorName(error));
         return;
       }
       if (id !== camSession) return;
@@ -435,12 +447,13 @@
       setState("idle", reason ? { reason } : null);
     }
 
-    function fail(kind) {
+    /** kind: the stage that failed (load, detector, worker, render); name: the error's class name. */
+    function fail(kind, name = "Error") {
       if (frameHandle !== null) env.cancelFrame(frameHandle);
       frameHandle = null;
       dropJob();
       clearView();
-      setState("error", { kind });
+      setState("error", { kind, name });
     }
 
     function restartDetector() {
@@ -451,10 +464,10 @@
       setState("loading");
       withTimeout(ensureWorker(), READY_TIMEOUT_MS, env).then(
         () => id === camSession && schedule(),
-        () => {
+        (error) => {
           if (id !== camSession) return;
           resetWorker();
-          fail("detector");
+          fail("load", errorName(error));
         },
       );
     }
@@ -556,7 +569,7 @@
           setState("hidden", { why: "noface" });
         }
       } catch (error) {
-        fail("render"); // clears the canvas; nothing half-drawn stays visible
+        fail("render", errorName(error)); // clears the canvas; nothing half-drawn stays visible
         return;
       } finally {
         current.frame.close();
