@@ -118,7 +118,7 @@ window.LCS_I18N.en = {
   "shots.removeAria": "Remove snapshot {n}",
   "toast.title": "Snapshot ready",
   "toast.meta": "{w}×{h} · PNG · no metadata",
-  "effects.exclusive": "Glasses and face blur are exclusive: turning glasses on turns face blur off. Turning glasses off does not turn blur back on, and opening Privacy turns glasses off.",
+  "effects.exclusive": "Glasses and face blur are exclusive: turning glasses on turns face blur off. Opening Privacy turns face blur on and glasses off. Turning glasses off yourself does not turn blur back on.",
   "effects.faceVisible": "Glasses are on, so face blur is off — faces are visible in the preview and in snapshots.",
   "background.soon": "Background blur and replacement are planned for a later update.",
 

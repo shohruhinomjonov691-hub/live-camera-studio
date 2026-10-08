@@ -289,8 +289,9 @@
   function selectMode(mode) {
     $$("[data-mode]").forEach((x) => x.setAttribute("aria-selected", String(x.dataset.mode === mode)));
     ["privacy", "effects", "background"].forEach((m) => ($(`#p-${m}`).hidden = m !== mode));
-    // Privacy mode turns glasses off. It does not turn blur on by itself: that is the Blur faces toggle.
-    if (mode === "privacy" && camera.settings.glasses) camera.setSettings({ glasses: false });
+    // Privacy mode means face blur ON (which turns glasses OFF). The controller drops the frame in flight
+    // and, if blur was off, wipes the preview at once until a blurred frame arrives.
+    if (mode === "privacy") camera.setSettings({ blurOn: true });
     renderAllSettings();
   }
   $$("[data-mode]").forEach((b) => b.addEventListener("click", () => selectMode(b.dataset.mode)));

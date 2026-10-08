@@ -14,7 +14,7 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 - Real-time face blur: pixelate + Gaussian, Gaussian, or a solid block, in three strengths; optional face boxes on the preview.
 - Fail-closed privacy mode: while face blur is on, the whole preview is hidden when the detector is loading, has failed, is slower than 1 s, or finds no face (see [Privacy](#privacy)). Hiding reduces exposure; it is **not** guaranteed anonymization.
 - Clear states for permission prompt, blocked permission, no/busy camera, camera unplugged, insecure page and detector errors.
-- Glasses effect: drawn on the eye landmarks of each frame (follows head tilt), adjustable size. Glasses and face blur are exclusive: turning glasses on turns face blur off (the UI then says faces are visible); turning blur on, or opening Privacy, turns glasses off; turning glasses off does not turn blur back on.
+- Glasses effect: drawn on the eye landmarks of each frame (follows head tilt), adjustable size. Glasses and face blur are exclusive: turning glasses on turns face blur off (the UI then says faces are visible); turning blur on turns glasses off; opening Privacy turns face blur on and glasses off (the preview is wiped at once and reopens with the next blurred frame); turning glasses off yourself does not turn blur back on. If the effect fails, glasses turn off and blur turns back on.
 - Snapshots: a PNG of the processed preview exactly as shown (blur, glasses, mirror), without face boxes or HUD and without metadata; kept in the tab until removed or the page closes. Available only while a processed frame is on screen.
 - Background effects are planned for a later update.
 
