@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Camera Studio</title>
+<link rel="icon" href="data:,">
+<!--
+  Design mockup. There is NO camera, detection or segmentation here: the preview is an SVG illustration.
+  Design-review controls live in review.html, not in this page.
+  Hash parameters (used by review.html and screenshots):
+    state = idle | prompt | loading | live | noface | snapshot | denied | nocam | error
+    mode  = privacy | effects | background     tab = camera | upload     bg = none | blur | image
+    blur  = off      later = off     lang = en | ko (not saved; the switcher saves the choice)
+-->
+<script src="i18n/en.js"></script>
+<script src="i18n/ko.js"></script>
+<style>
+:root {
+  --bg: #0b0d11;
+  --bg-2: #11141a;
+  --surface: #161a22;
+  --surface-2: #1d222c;
+  --line: #262c38;
+  --line-2: #343c4b;
+  --text: #f1f4f9;
+  --muted: #b6bfcc;   /* secondary text: 9.4:1 on --surface */
+  --faint: #95a0b1;   /* helper text: 6.6:1 on --surface (WCAG AA) */
+  --accent: #8aa6ff;
+  --accent-ink: #0b0d11;
+  --ok: #3ccf8e;
+  --warn: #f5b84a;
+  --danger: #ff7b7b;
+  --radius: 14px;
+  --radius-sm: 10px;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+html:lang(ko) body { word-break: keep-all; }
+button { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+
+/* ---------- app shell ---------- */
+.topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 24px; border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.01em; font-size: 16px; white-space: nowrap; }
+.brand-mark {
+  width: 28px; height: 28px; border-radius: 8px; flex: none;
+  background: conic-gradient(from 210deg, #8aa6ff, #a78bfa, #3ccf8e, #8aa6ff);
+  display: grid; place-items: center;
+}
+.brand-mark::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--bg-2); }
+.tabs, .lang { display: flex; gap: 2px; padding: 3px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.tabs button, .lang button {
+  border: 0; background: transparent; padding: 6px 14px; border-radius: 7px; cursor: pointer;
+  color: var(--muted); font-weight: 600; font-size: 14px; white-space: nowrap;
+}
+.lang button { padding: 5px 10px; font-size: 13px; }
+.tabs button[aria-selected="true"], .lang button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-2); }
+.top-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.privacy-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--muted);
+  padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; white-space: nowrap;
+}
+.privacy-pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px rgba(60,207,142,.15); flex: none; }
+
+.layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 368px; gap: 24px;
+  padding: 24px; max-width: 1440px; margin: 0 auto;
+}
+
+/* ---------- stage ---------- */
+.stage-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.stage {
+  position: relative; aspect-ratio: 16 / 9; width: 100%;
+  border-radius: var(--radius); overflow: hidden;
+  background: #07090c; border: 1px solid var(--line);
+  isolation: isolate;
+}
+.scene, .scene > * { position: absolute; inset: 0; width: 100%; height: 100%; }
+.scene .bg { transition: filter .3s; }
+.stage[data-bg="blur"] .scene .bg { filter: blur(14px) saturate(.9); transform: scale(1.06); }
+.scene .bg-img { opacity: 0; transition: opacity .3s; }
+.stage[data-bg="image"] .scene .bg-img { opacity: 1; }
+.face-blur {
+  position: absolute; border-radius: 14px; overflow: hidden;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  background:
+    linear-gradient(rgba(0,0,0,.06), rgba(0,0,0,.06)),
+    repeating-conic-gradient(rgba(255,255,255,.07) 0 25%, rgba(0,0,0,.07) 0 50%) 0 0 / 14px 14px;
+}
+.bbox { position: absolute; border: 2px solid var(--ok); border-radius: 6px; box-shadow: 0 0 0 1px rgba(0,0,0,.4); }
+.bbox span {
+  position: absolute; left: -2px; top: -24px; white-space: nowrap;
+  font-size: 12px; font-weight: 650; padding: 2px 7px; border-radius: 4px 4px 4px 0;
+  background: var(--ok); color: #05130c;
+}
+.stage[data-boxes="off"] .bbox { display: none; }
+.glasses { position: absolute; inset: 0; width: 100%; height: 100%; }
+.mock-badge {
+  position: absolute; left: 12px; bottom: 12px; z-index: 5;
+  font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  padding: 4px 8px; border-radius: 6px;
+  background: rgba(11,13,17,.82); color: #ffd77a; border: 1px solid rgba(255,215,122,.45);
+}
+.hud { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; gap: 8px; z-index: 4; pointer-events: none; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 600; padding: 5px 10px; border-radius: 999px;
+  background: rgba(11, 13, 17, .78); border: 1px solid rgba(255,255,255,.1);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); white-space: nowrap;
+}
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+.chip.live .dot { animation: pulse 1.6s infinite; }
+.chip.right { margin-left: auto; color: var(--muted); }
+.chip.warn { color: var(--warn); border-color: rgba(245,184,74,.4); }
+@keyframes pulse { 50% { opacity: .35; } }
+
+/* overlay states (idle / prompt / errors / loading / hidden frame) */
+.overlay-state {
+  position: absolute; inset: 0; z-index: 6;
+  display: grid; place-items: center; padding: 24px; text-align: center;
+  background: radial-gradient(ellipse at 50% 40%, #161b26 0%, #07090c 72%);
+}
+.overlay-card { max-width: 460px; display: grid; justify-items: center; gap: 12px; }
+.overlay-card h2 { margin: 4px 0 0; font-size: 20px; letter-spacing: -.015em; font-weight: 650; }
+.overlay-card p { margin: 0; color: var(--muted); font-size: 15px; }
+.overlay-card .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
+.overlay-card ol { text-align: left; margin: 0; padding-left: 20px; color: var(--muted); font-size: 14.5px; }
+.state-icon {
+  width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center;
+  background: var(--surface-2); border: 1px solid var(--line-2);
+}
+.state-icon.danger { color: var(--danger); background: rgba(255,123,123,.08); border-color: rgba(255,123,123,.35); }
+.state-icon.warn { color: var(--warn); background: rgba(245,184,74,.08); border-color: rgba(245,184,74,.35); }
+.state-icon svg { width: 30px; height: 30px; }
+.fineprint { font-size: 13px; color: var(--faint); margin: 0; }
+.spinner {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 3px solid var(--line-2); border-top-color: var(--accent);
+  animation: spin .9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.steps { list-style: none; padding: 0; margin: 6px 0 0; display: grid; gap: 8px; text-align: left; font-size: 14.5px; }
+.steps li { display: flex; gap: 10px; align-items: center; color: var(--faint); }
+.steps li::before { content: ""; width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line-2); flex: none; }
+.steps li.done { color: var(--text); }
+.steps li.done::before { background: var(--ok); border-color: var(--ok); }
+.steps li.now { color: var(--text); }
+.steps li.now::before { border-color: var(--accent); border-top-color: transparent; animation: spin .9s linear infinite; }
+.prompt-arrow {
+  position: absolute; top: 14px; left: 18px; z-index: 7;
+  display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--accent);
+}
+
+/* The hidden-frame cover sits under the HUD and controls so the camera can still be turned off. */
+#ov-hidden { z-index: 3; }
+
+.noface-banner {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 5;
+  display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100% - 32px);
+  padding: 10px 14px; border-radius: 12px; font-size: 14px;
+  background: rgba(40, 30, 10, .92); border: 1px solid rgba(245,184,74,.5); color: #fde7b5;
+}
+.noface-banner svg { flex: none; }
+
+.toast {
+  position: absolute; right: 16px; bottom: 16px; z-index: 7;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px; border-radius: 12px;
+  background: var(--surface-2); border: 1px solid var(--line-2);
+  box-shadow: 0 12px 32px rgba(0,0,0,.45);
+}
+.toast .thumb { width: 64px; height: 36px; border-radius: 6px; background: linear-gradient(135deg,#2b3550,#3a2f4f); flex: none; }
+.toast b { display: block; font-size: 14px; }
+.toast small { color: var(--muted); font-size: 12.5px; }
+.toast .btn { margin-left: auto; }
+.flash { position: absolute; inset: 0; background: #fff; opacity: 0; z-index: 8; pointer-events: none; animation: flash .5s ease-out; }
+@keyframes flash { 0% { opacity: .55; } 100% { opacity: 0; } }
+
+/* ---------- control bar ---------- */
+.controlbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--line);
+}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 40px; padding: 0 16px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2); background: var(--surface-2);
+  font-weight: 600; font-size: 14px; cursor: pointer; white-space: nowrap;
+}
+.btn svg { width: 18px; height: 18px; flex: none; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.danger-soft { color: var(--danger); border-color: rgba(255,123,123,.4); background: rgba(255,123,123,.08); }
+.btn.ghost { background: transparent; }
+.btn.icon { width: 44px; height: 44px; padding: 0; }
+.btn:focus-visible, .tabs button:focus-visible, .lang button:focus-visible, .seg button:focus-visible,
+.pill:focus-visible, .card:focus-visible, .swatch:focus-visible, .shutter:focus-visible, .switch input:focus-visible + span {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
+.shutter {
+  width: 60px; height: 60px; border-radius: 50%; border: 3px solid var(--text);
+  background: transparent; display: grid; place-items: center; cursor: pointer;
+}
+.shutter::after { content: ""; width: 46px; height: 46px; border-radius: 50%; background: var(--text); }
+.shutter[disabled] { opacity: .35; cursor: not-allowed; }
+.controlbar .spacer { flex: 1; }
+.meta { font-size: 13px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.notice {
+  display: flex; gap: 10px; align-items: flex-start; margin: 0;
+  padding: 12px 14px; border-radius: var(--radius-sm); font-size: 14px;
+  background: rgba(245,184,74,.07); border: 1px solid rgba(245,184,74,.32); color: #f6e4b8;
+}
+.notice svg { flex: none; width: 18px; height: 18px; margin-top: 2px; color: var(--warn); }
+.notice strong { color: #ffe7a8; }
+
+/* ---------- side panel ---------- */
+.panel {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  display: flex; flex-direction: column; min-width: 0; align-self: start;
+}
+.seg {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; margin: 12px;
+  padding: 3px; border-radius: 11px; background: var(--bg-2); border: 1px solid var(--line);
+}
+.seg button {
+  border: 0; background: transparent; border-radius: 8px; padding: 8px 6px; cursor: pointer;
+  display: grid; justify-items: center; gap: 2px; color: var(--muted); font-size: 13.5px; font-weight: 600;
+}
+.seg button svg { width: 18px; height: 18px; }
+.seg button[aria-selected="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-2); }
+.panel-body { padding: 4px 16px 16px; display: grid; gap: 18px; }
+.panel h3 { margin: 0; font-size: 12.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+.field { display: grid; gap: 8px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.row.top { align-items: flex-start; }
+.label { font-weight: 600; font-size: 14.5px; }
+.sub { display: block; font-weight: 400; font-size: 13px; line-height: 1.45; color: var(--faint); margin-top: 2px; }
+.switch { position: relative; flex: none; }
+.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.switch span { display: block; width: 40px; height: 24px; border-radius: 999px; background: var(--line-2); transition: background .2s; }
+.switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .2s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(16px); }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill {
+  border: 1px solid var(--line-2); background: var(--bg-2); border-radius: 8px; padding: 7px 11px;
+  font-size: 13.5px; font-weight: 600; cursor: pointer; color: var(--muted);
+}
+.pill[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: rgba(138,166,255,.12); }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+.tag {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 650; white-space: nowrap;
+  padding: 2px 8px; border-radius: 6px; background: var(--bg-2); border: 1px solid var(--line-2); color: var(--muted);
+}
+.tag.ok { color: var(--ok); border-color: rgba(60,207,142,.4); background: rgba(60,207,142,.08); }
+.tag.later { color: #cdbfff; border-color: rgba(167,139,250,.4); background: rgba(167,139,250,.1); }
+.card {
+  border: 1px solid var(--line-2); background: var(--bg-2); border-radius: 12px; padding: 10px;
+  display: grid; gap: 6px; text-align: left; cursor: pointer;
+}
+.card[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.card .art { height: 64px; border-radius: 8px; background: var(--surface-2); display: grid; place-items: center; }
+.card b { font-size: 14.5px; }
+.card small { color: var(--faint); font-size: 13px; }
+.swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.swatch { aspect-ratio: 1; border-radius: 10px; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.swatch[aria-pressed="true"] { border-color: var(--accent); }
+.swatch.add { background: var(--bg-2); border: 1px dashed var(--line-2); color: var(--muted); font-size: 20px; }
+.hr { height: 1px; background: var(--line); margin: 0 -16px; }
+.shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.shot { aspect-ratio: 16/9; border-radius: 8px; border: 1px solid var(--line-2); position: relative; overflow: hidden; }
+.shot button {
+  position: absolute; right: 4px; bottom: 4px; width: 28px; height: 28px; border-radius: 6px;
+  border: 0; background: rgba(11,13,17,.82); display: grid; place-items: center; cursor: pointer;
+}
+.shot button svg { width: 15px; height: 15px; }
+
+/* upload tab (existing flow, unchanged) */
+.upload-view { padding: 24px; max-width: 960px; margin: 0 auto; display: grid; gap: 16px; }
+.dropzone {
+  border: 1.5px dashed var(--line-2); border-radius: var(--radius); padding: 56px 24px;
+  display: grid; justify-items: center; gap: 10px; text-align: center; background: var(--surface);
+}
+.dropzone h2 { margin: 0; font-size: 20px; }
+.dropzone p { margin: 0; color: var(--muted); }
+
+/* ---------- mobile ---------- */
+.mobile-dock { display: none; }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; padding: 12px 16px 24px; gap: 12px; }
+  .topbar { padding: 10px 16px; gap: 10px; flex-wrap: wrap; }
+  .tabs { order: 3; width: 100%; }
+  .tabs button { flex: 1; }
+  .privacy-pill { display: none; }
+  .stage { aspect-ratio: 4 / 5; max-height: 64svh; }
+  .controlbar.desktop { display: none; }
+  .mobile-dock {
+    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; padding: 12px 14px 14px;
+    background: linear-gradient(transparent, rgba(0,0,0,.7));
+  }
+  .mobile-dock .left { justify-self: start; }
+  .mobile-dock .right { justify-self: end; }
+  .mobile-dock .btn { background: rgba(11,13,17,.75); border-color: rgba(255,255,255,.14); }
+  .hud .chip.right { display: none; }
+  .mock-badge { bottom: auto; top: 48px; }
+  .noface-banner { left: 12px; right: 12px; bottom: 92px; transform: none; width: auto; max-width: none; }
+  .toast { left: 12px; right: 12px; bottom: 92px; }
+  .overlay-card h2 { font-size: 18px; }
+  .overlay-card p, .overlay-card ol { font-size: 14px; }
+  .notice { font-size: 13.5px; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Live Camera Studio</span></div>
+  <nav class="tabs" role="tablist" data-i18n-aria="tab.label">
+    <button role="tab" data-tab="camera" aria-selected="true" data-i18n="tab.camera"></button>
+    <button role="tab" data-tab="upload" aria-selected="false" data-i18n="tab.upload"></button>
+  </nav>
+  <div class="top-right">
+    <span class="privacy-pill" data-i18n-title="pill.local.title"><i></i><span data-i18n="pill.local"></span></span>
+    <div class="lang" role="group" data-i18n-aria="lang.label">
+      <button data-lang="en" lang="en" aria-pressed="true">EN</button>
+      <button data-lang="ko" lang="ko" aria-pressed="false">한국어</button>
+    </div>
+  </div>
+</header>
+
+<!-- ============ CAMERA TAB ============ -->
+<main id="view-camera" class="layout">
+  <section class="stage-col">
+    <div class="stage" id="stage" data-bg="none" data-boxes="on">
+      <!-- Illustrated scene: stands in for the camera feed. -->
+      <div class="scene" aria-hidden="true">
+        <svg class="bg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+          <defs>
+            <linearGradient id="wall" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#2a3142"/><stop offset="1" stop-color="#1a1f2b"/></linearGradient>
+            <linearGradient id="win" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#8fb4e8"/><stop offset="1" stop-color="#e8c79a"/></linearGradient>
+          </defs>
+          <rect width="1600" height="900" fill="url(#wall)"/>
+          <rect x="1060" y="90" width="380" height="460" rx="10" fill="url(#win)" opacity=".75"/>
+          <rect x="1245" y="90" width="10" height="460" fill="#1a1f2b" opacity=".6"/>
+          <rect x="1060" y="315" width="380" height="10" fill="#1a1f2b" opacity=".6"/>
+          <rect x="120" y="150" width="240" height="380" rx="6" fill="#3a2f2a"/>
+          <rect x="140" y="180" width="200" height="12" fill="#c58b4e"/><rect x="140" y="230" width="160" height="12" fill="#7aa36f"/>
+          <rect x="140" y="280" width="190" height="12" fill="#b0563f"/><rect x="140" y="330" width="120" height="12" fill="#d7c48f"/>
+          <circle cx="1400" cy="700" r="90" fill="#2f5d45" opacity=".9"/><rect x="1380" y="740" width="40" height="160" fill="#4b3a2c"/>
+          <rect x="0" y="760" width="1600" height="140" fill="#141821"/>
+        </svg>
+        <svg class="bg-img" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+          <defs><linearGradient id="sky" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#3b2a6b"/><stop offset=".6" stop-color="#d0607a"/><stop offset="1" stop-color="#f3b46a"/></linearGradient></defs>
+          <rect width="1600" height="900" fill="url(#sky)"/>
+          <circle cx="1180" cy="560" r="150" fill="#ffd79a" opacity=".85"/>
+          <path d="M0 700 L260 520 L480 660 L760 460 L1040 650 L1300 540 L1600 690 L1600 900 L0 900Z" fill="#2a1e45"/>
+          <path d="M0 790 L320 650 L640 760 L980 640 L1300 760 L1600 700 L1600 900 L0 900Z" fill="#1b1430"/>
+        </svg>
+        <svg class="person" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+          <path d="M520 900 C540 700 650 630 800 630 C950 630 1060 700 1080 900Z" fill="#3b4a6b"/>
+          <path d="M740 600 L740 660 C760 690 840 690 860 660 L860 600Z" fill="#c99a7a"/>
+          <ellipse cx="800" cy="440" rx="140" ry="175" fill="#d8aa88"/>
+          <path d="M660 430 C650 300 720 250 800 250 C900 250 960 310 942 430 C930 360 880 330 800 335 C720 335 672 370 660 430Z" fill="#2a1e18"/>
+        </svg>
+      </div>
+
+      <!-- Layers the app draws over the feed: glasses, face blur, boxes -->
+      <svg class="glasses" id="glasses" hidden viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <g fill="rgba(30,30,40,.55)" stroke="#111" stroke-width="10">
+          <rect x="680" y="395" width="105" height="70" rx="22"/>
+          <rect x="815" y="395" width="105" height="70" rx="22"/>
+        </g>
+        <path d="M785 420 Q800 405 815 420" stroke="#111" stroke-width="10" fill="none"/>
+      </svg>
+      <div class="face-blur" id="face-blur"></div>
+      <div class="bbox" id="bbox"><span data-i18n="bbox.label"></span></div>
+
+      <div class="hud" id="hud">
+        <span class="chip live"><span class="dot"></span><span data-i18n="hud.live"></span></span>
+        <span class="chip" id="chip-faces"></span>
+        <span class="chip right" data-i18n="hud.fps"></span>
+      </div>
+      <!-- Mockup only: marks the illustration as fake. Not part of the product. -->
+      <span class="mock-badge" data-i18n="mock.badge"></span>
+
+      <div class="noface-banner" id="noface" hidden>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <span data-i18n-html="noface.banner"></span>
+      </div>
+
+      <div class="toast" id="toast" hidden>
+        <span class="thumb"></span>
+        <span><b data-i18n="toast.title"></b><small data-i18n="toast.meta"></small></span>
+        <button class="btn primary" style="height:36px" data-i18n="toast.download"></button>
+      </div>
+      <div class="flash" id="flash" hidden></div>
+
+      <!-- Overlay states -->
+      <div class="overlay-state" id="ov-idle" hidden>
+        <div class="overlay-card">
+          <div class="state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
+          <h2 data-i18n="idle.title"></h2>
+          <p data-i18n="idle.body"></p>
+          <div class="actions"><button class="btn primary" data-i18n="idle.cta"></button><button class="btn ghost" data-goto="upload" data-i18n="idle.alt"></button></div>
+          <p class="fineprint" data-i18n="idle.fine"></p>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-prompt" hidden>
+        <span class="prompt-arrow"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg><span data-i18n="prompt.arrow"></span></span>
+        <div class="overlay-card">
+          <div class="spinner" aria-hidden="true"></div>
+          <h2 data-i18n="prompt.title"></h2>
+          <p data-i18n="prompt.body"></p>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-loading" hidden>
+        <div class="overlay-card">
+          <h2 data-i18n="loading.title"></h2>
+          <ul class="steps">
+            <li class="done" data-i18n="loading.s1"></li>
+            <li class="now" data-i18n="loading.s2"></li>
+            <li data-i18n="loading.s3"></li>
+          </ul>
+          <p class="fineprint" data-i18n="loading.fine"></p>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-hidden" hidden>
+        <div class="overlay-card">
+          <div class="state-icon warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17.9 17.9A10 10 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.1-5.9M9.9 4.2A9 9 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.2 3.2M1 1l22 22"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/></svg></div>
+          <h2 data-i18n="hidden.title"></h2>
+          <p data-i18n="hidden.noface"></p>
+          <p class="fineprint" data-i18n="hidden.note"></p>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-denied" hidden>
+        <div class="overlay-card">
+          <div class="state-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 1l22 22M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/></svg></div>
+          <h2 data-i18n="denied.title"></h2>
+          <ol>
+            <li data-i18n="denied.s1"></li>
+            <li data-i18n-html="denied.s2"></li>
+            <li data-i18n="denied.s3"></li>
+          </ol>
+          <div class="actions"><button class="btn primary" data-i18n="denied.cta"></button><button class="btn ghost" data-goto="upload" data-i18n="denied.alt"></button></div>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-nocam" hidden>
+        <div class="overlay-card">
+          <div class="state-icon warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/><path d="M6 10l5 5M11 10l-5 5"/></svg></div>
+          <h2 data-i18n="nocam.title"></h2>
+          <p data-i18n="nocam.body"></p>
+          <div class="actions"><button class="btn primary" data-i18n="nocam.cta"></button><button class="btn ghost" data-goto="upload" data-i18n="idle.alt"></button></div>
+        </div>
+      </div>
+
+      <div class="overlay-state" id="ov-error" hidden>
+        <div class="overlay-card">
+          <div class="state-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+          <h2 data-i18n="error.title"></h2>
+          <p data-i18n="error.body"></p>
+          <div class="actions"><button class="btn primary" data-i18n="error.cta"></button><button class="btn danger-soft" data-i18n="error.alt"></button></div>
+          <p class="fineprint" data-i18n="error.fine"></p>
+        </div>
+      </div>
+
+      <!-- Mobile controls float over the preview -->
+      <div class="mobile-dock" id="mobile-dock">
+        <button class="btn icon left" data-i18n-aria="dock.off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 1l22 22M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/></svg></button>
+        <button class="shutter" data-act="snap" data-i18n-aria="dock.snap"></button>
+        <button class="btn icon right" data-i18n-aria="dock.flip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4-4.6 4.4A9 9 0 0 1 3.5 15"/></svg></button>
+      </div>
+    </div>
+
+    <div class="controlbar desktop">
+      <button class="btn danger-soft" id="cam-toggle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 1l22 22M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/></svg><span></span></button>
+      <button class="btn ghost" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M4 7l4 5-4 5M20 7l-4 5 4 5"/></svg><span data-i18n="ctrl.mirror"></span></button>
+      <span class="spacer"></span>
+      <span class="meta" id="meta"></span>
+      <button class="btn primary" data-act="snap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg><span data-i18n="ctrl.snap"></span></button>
+    </div>
+
+    <p class="notice" role="note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+      <span data-i18n-html="notice"></span>
+    </p>
+  </section>
+
+  <aside class="panel" data-i18n-aria="panel.label">
+    <div class="seg" role="tablist" data-i18n-aria="mode.label">
+      <button role="tab" data-mode="privacy" aria-selected="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span data-i18n="mode.privacy"></span></button>
+      <button role="tab" data-mode="effects" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.8H20l-4.9 3.6 1.9 5.8L12 14.6l-4.9 3.6 1.9-5.8L4 8.8h6.1z"/></svg><span data-i18n="mode.effects"></span></button>
+      <button role="tab" data-mode="background" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg><span data-i18n="mode.background"></span></button>
+    </div>
+
+    <!-- Privacy -->
+    <div class="panel-body" id="p-privacy">
+      <div class="row">
+        <label for="t-blur"><span class="label" data-i18n="privacy.blur"></span><span class="sub" data-i18n="privacy.blur.sub"></span></label>
+        <span class="switch"><input id="t-blur" type="checkbox" checked><span></span></span>
+      </div>
+      <div class="field">
+        <span class="label" data-i18n="privacy.method"></span>
+        <div class="pills">
+          <button class="pill" aria-pressed="true" data-i18n="privacy.method.pixel"></button>
+          <button class="pill" aria-pressed="false" data-i18n="privacy.method.gauss"></button>
+          <button class="pill" aria-pressed="false" data-i18n="privacy.method.block"></button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="row"><span class="label" data-i18n="privacy.strength"></span><span class="meta" data-i18n="privacy.strength.value"></span></div>
+        <input type="range" min="1" max="3" value="3" data-i18n-aria="privacy.strength">
+      </div>
+      <div class="row">
+        <label for="t-boxes"><span class="label" data-i18n="privacy.boxes"></span><span class="sub" data-i18n="privacy.boxes.sub"></span></label>
+        <span class="switch"><input id="t-boxes" type="checkbox" checked><span></span></span>
+      </div>
+      <div class="row top">
+        <span><span class="label" data-i18n="privacy.hide"></span><span class="sub" data-i18n="privacy.hide.sub"></span></span>
+        <span class="tag ok" data-i18n="privacy.hide.badge"></span>
+      </div>
+      <div class="hr"></div>
+      <div class="row"><span class="label" data-i18n="privacy.detector"></span><span class="tag" data-i18n="privacy.detector.value"></span></div>
+    </div>
+
+    <!-- Effects -->
+    <div class="panel-body" id="p-effects" hidden>
+      <div class="row"><h3 data-i18n="effects.title"></h3><span class="tag later" data-later data-i18n="later.2"></span></div>
+      <button class="card" aria-pressed="true">
+        <span class="art"><svg viewBox="0 0 120 50" width="110" aria-hidden="true"><g fill="rgba(138,166,255,.25)" stroke="#e5e9f2" stroke-width="5"><rect x="8" y="10" width="44" height="30" rx="10"/><rect x="68" y="10" width="44" height="30" rx="10"/></g><path d="M52 22 Q60 14 68 22" stroke="#e5e9f2" stroke-width="5" fill="none"/></svg></span>
+        <b data-i18n="effects.glasses"></b><small data-i18n="effects.glasses.sub"></small>
+      </button>
+      <p class="fineprint" data-i18n="effects.only"></p>
+      <div class="row">
+        <label for="t-effect"><span class="label" data-i18n="effects.toggle"></span><span class="sub" data-i18n="effects.toggle.sub"></span></label>
+        <span class="switch"><input id="t-effect" type="checkbox" checked><span></span></span>
+      </div>
+      <div class="field">
+        <div class="row"><span class="label" data-i18n="effects.size"></span><span class="meta">100%</span></div>
+        <input type="range" min="80" max="120" value="100" data-i18n-aria="effects.size">
+      </div>
+    </div>
+
+    <!-- Background -->
+    <div class="panel-body" id="p-background" hidden>
+      <div class="row"><h3 data-i18n="bg.title"></h3><span class="tag later" data-later data-i18n="later.3"></span></div>
+      <div class="pills" id="bg-pills">
+        <button class="pill" data-bg="none" aria-pressed="false" data-i18n="bg.none"></button>
+        <button class="pill" data-bg="blur" aria-pressed="true" data-i18n="bg.blur"></button>
+        <button class="pill" data-bg="image" aria-pressed="false" data-i18n="bg.image"></button>
+      </div>
+      <div class="field" id="bg-blur-field">
+        <div class="row"><span class="label" data-i18n="bg.strength"></span><span class="meta" data-i18n="bg.strength.value"></span></div>
+        <input type="range" min="1" max="3" value="2" data-i18n-aria="bg.strength">
+      </div>
+      <div class="field" id="bg-img-field">
+        <span class="label" data-i18n="bg.images"></span>
+        <div class="swatches">
+          <button class="swatch" aria-pressed="true" data-i18n-aria="bg.img.dusk" style="background:linear-gradient(#3b2a6b,#d0607a,#f3b46a)"></button>
+          <button class="swatch" aria-pressed="false" data-i18n-aria="bg.img.office" style="background:linear-gradient(135deg,#d9dee7,#9aa7bb)"></button>
+          <button class="swatch" aria-pressed="false" data-i18n-aria="bg.img.forest" style="background:linear-gradient(160deg,#1f4d3a,#5d8f5a)"></button>
+          <button class="swatch" aria-pressed="false" data-i18n-aria="bg.img.dark" style="background:radial-gradient(#2b3550,#0b0d11)"></button>
+          <button class="swatch add" data-i18n-aria="bg.img.own">+</button>
+        </div>
+        <p class="fineprint" data-i18n="bg.own.note"></p>
+      </div>
+      <p class="fineprint" data-i18n="bg.seg.note"></p>
+    </div>
+
+    <div class="panel-body" style="padding-top:0">
+      <div class="hr"></div>
+      <div class="row"><h3 data-i18n="shots.title"></h3><span class="meta" data-i18n="shots.note"></span></div>
+      <div class="shots">
+        <div class="shot" style="background:linear-gradient(135deg,#2b3550,#3a2f4f)"><button data-i18n-aria="shots.download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></button></div>
+        <div class="shot" style="background:linear-gradient(135deg,#253047,#2f3f3a)"><button data-i18n-aria="shots.download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></button></div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<!-- ============ UPLOAD TAB (existing flow, unchanged) ============ -->
+<main id="view-upload" class="upload-view" hidden>
+  <div class="dropzone">
+    <div class="state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></div>
+    <h2 data-i18n="upload.title"></h2>
+    <p data-i18n="upload.limits"></p>
+    <button class="btn primary" data-i18n="upload.cta"></button>
+  </div>
+  <p class="notice" role="note">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+    <span data-i18n-html="notice.upload"></span>
+  </p>
+  <p class="fineprint" data-i18n="upload.fine"></p>
+</main>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+const stage = $("#stage");
+const LANGS = ["en", "ko"];
+const LANG_KEY = "lcs.lang";
+const ui = { state: "live", mode: "privacy", tab: "camera", bg: "blur", lang: "en" };
+
+function savedLang() {
+  try { const v = localStorage.getItem(LANG_KEY); return LANGS.includes(v) ? v : null; } catch (_) { return null; }
+}
+function saveLang(lang) {
+  try { localStorage.setItem(LANG_KEY, lang); } catch (_) { /* storage blocked: choice lasts for this page only */ }
+}
+function t(key) {
+  const dict = window.LCS_I18N[ui.lang] || window.LCS_I18N.en;
+  return dict[key] ?? window.LCS_I18N.en[key] ?? key;
+}
+function applyI18n() {
+  document.documentElement.lang = ui.lang;
+  document.title = t("doc.title");
+  $$("[data-i18n]").forEach((n) => (n.textContent = t(n.dataset.i18n)));
+  // Only our own translation strings are inserted as HTML (for <b>/<strong>).
+  $$("[data-i18n-html]").forEach((n) => (n.innerHTML = t(n.dataset.i18nHtml)));
+  $$("[data-i18n-aria]").forEach((n) => n.setAttribute("aria-label", t(n.dataset.i18nAria)));
+  $$("[data-i18n-title]").forEach((n) => n.setAttribute("title", t(n.dataset.i18nTitle)));
+  $$(".lang button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lang === ui.lang)));
+}
+
+// Face box over the illustration (scene is drawn with "slice" into 1600x900).
+function placeFace() {
+  const r = stage.getBoundingClientRect();
+  const s = Math.max(r.width / 1600, r.height / 900);
+  const ox = (r.width - 1600 * s) / 2, oy = (r.height - 900 * s) / 2;
+  const box = { x: 645, y: 250, w: 310, h: 380 };
+  const pad = 0.15;
+  const css = (b) => ({
+    left: ox + b.x * s + "px", top: oy + b.y * s + "px", width: b.w * s + "px", height: b.h * s + "px",
+  });
+  Object.assign($("#bbox").style, css(box));
+  Object.assign($("#face-blur").style, css({
+    x: box.x - box.w * pad, y: box.y - box.h * pad * 0.6, w: box.w * (1 + 2 * pad), h: box.h * (1 + pad * 1.2),
+  }));
+}
+
+function render() {
+  applyI18n();
+  $("#view-camera").hidden = ui.tab !== "camera";
+  $("#view-upload").hidden = ui.tab !== "upload";
+  $$(".tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === ui.tab)));
+  $$(".seg button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.mode === ui.mode)));
+  ["privacy", "effects", "background"].forEach((m) => ($("#p-" + m).hidden = ui.mode !== m));
+
+  const blurOn = $("#t-blur").checked;
+  const streaming = ["live", "noface", "snapshot"].includes(ui.state);
+  const hasFace = ui.state === "live" || ui.state === "snapshot";
+  // Privacy rule: with face blur on, a frame with no detected face is hidden entirely.
+  // (Loading and error overlays already hide the frame.)
+  const frameHidden = ui.state === "noface" && blurOn;
+
+  ["idle", "prompt", "loading", "denied", "nocam", "error"].forEach((o) => ($("#ov-" + o).hidden = ui.state !== o));
+  $("#ov-hidden").hidden = !frameHidden;
+  $("#hud").hidden = !streaming;
+  $("#mobile-dock").style.visibility = streaming ? "visible" : "hidden";
+
+  $("#face-blur").hidden = !(hasFace && blurOn);
+  $("#bbox").hidden = !hasFace;
+  stage.dataset.boxes = $("#t-boxes").checked ? "on" : "off";
+  $("#chip-faces").textContent = t(hasFace ? "hud.faces.one" : "hud.faces.zero");
+  $("#chip-faces").classList.toggle("warn", !hasFace);
+  $("#noface").hidden = !(ui.state === "noface" && !blurOn);
+  $("#toast").hidden = ui.state !== "snapshot";
+  $("#flash").hidden = ui.state !== "snapshot";
+
+  // SVG elements have no .hidden property, so toggle the attribute.
+  $("#glasses").toggleAttribute("hidden", !(hasFace && ui.mode === "effects" && $("#t-effect").checked && !blurOn));
+  stage.dataset.bg = ui.mode === "background" && streaming ? ui.bg : "none";
+  $$("#bg-pills .pill").forEach((p) => p.setAttribute("aria-pressed", String(p.dataset.bg === ui.bg)));
+  $("#bg-blur-field").hidden = ui.bg !== "blur";
+  $("#bg-img-field").hidden = ui.bg !== "image";
+
+  $("#cam-toggle span").textContent = t(streaming ? "ctrl.off" : "ctrl.on");
+  $("#cam-toggle").className = streaming ? "btn danger-soft" : "btn primary";
+  $$("[data-act=snap]").forEach((b) => (b.disabled = !streaming || ui.state === "noface"));
+  $("#meta").textContent = t(streaming ? "ctrl.meta.on" : "ctrl.meta.off");
+  placeFace();
+}
+
+function readHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  for (const k of ["state", "mode", "tab", "bg"]) if (p.get(k)) ui[k] = p.get(k);
+  $("#t-blur").checked = p.get("blur") !== "off";
+  $$("[data-later]").forEach((n) => (n.hidden = p.get("later") === "off"));
+  // A hash language previews without saving; otherwise use the saved choice.
+  const hashLang = p.get("lang");
+  ui.lang = LANGS.includes(hashLang) ? hashLang : savedLang() || "en";
+}
+
+$$(".tabs button").forEach((b) => b.addEventListener("click", () => { ui.tab = b.dataset.tab; render(); }));
+$$("[data-goto]").forEach((b) => b.addEventListener("click", () => { ui.tab = b.dataset.goto; render(); }));
+$$(".seg button").forEach((b) => b.addEventListener("click", () => { ui.mode = b.dataset.mode; render(); }));
+$$("#bg-pills .pill").forEach((b) => b.addEventListener("click", () => { ui.bg = b.dataset.bg; render(); }));
+$$(".panel input[type=checkbox]").forEach((i) => i.addEventListener("change", render));
+$$("[data-act=snap]").forEach((b) => b.addEventListener("click", () => { ui.state = "snapshot"; render(); }));
+$$(".lang button").forEach((b) => b.addEventListener("click", () => { ui.lang = b.dataset.lang; saveLang(ui.lang); render(); }));
+$$("#p-privacy .pills .pill, .swatches .swatch:not(.add)").forEach((b) =>
+  b.addEventListener("click", () => {
+    b.parentElement.querySelectorAll("[aria-pressed]").forEach((x) => x.setAttribute("aria-pressed", "false"));
+    b.setAttribute("aria-pressed", "true");
+  }));
+window.addEventListener("resize", placeFace);
+window.addEventListener("hashchange", () => { readHash(); render(); });
+readHash();
+render();
+</script>
+</body>
+</html>

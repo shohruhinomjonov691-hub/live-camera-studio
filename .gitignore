@@ -6,3 +6,6 @@ __pycache__/
 .env
 # Evaluation images are never committed
 eval/images/
+
+# Generated design screenshots are not committed
+design/**/screenshots/
