@@ -2,6 +2,10 @@
 
 A small web app that blurs faces — live from the camera, or in an uploaded photo. Live frames are processed entirely in the browser; uploaded photos are processed in server memory and never stored.
 
+**Live demo: https://camera.gotrips.cloud**
+
+**Status:** the MVP feature set below is complete and deployed. Face-detection quality has not been formally evaluated yet, and browser coverage is limited to the smoke tests listed under [Testing status](#testing-status).
+
 > **Automatic detection does not guarantee that every face is found.** Review the preview before you download anything, and add manual regions to uploaded photos where needed. The UI shows this warning permanently.
 
 The UI is in English by default, with a Korean language switcher; the choice is remembered in the browser.
@@ -13,7 +17,7 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 - Camera on/off, mirror, front/back switch (shown when the device has more than one camera).
 - Real-time face blur: pixelate + Gaussian, Gaussian, or a solid block, in three strengths; optional face boxes on the preview.
 - Fail-closed privacy mode: while face blur is on, the whole preview is hidden when the detector is loading, has failed, is slower than 1 s, or finds no face (see [Privacy](#privacy)). Hiding reduces exposure; it is **not** guaranteed anonymization.
-- Clear states for permission prompt, blocked permission, no/busy camera, camera unplugged, insecure page and detector errors.
+- Clear states for permission prompt, blocked permission, no/busy camera, camera unplugged and insecure page. Errors show which stage failed — `camera`, `video` (playback), `detector-load`, `detector-run`, `worker` or `render` — with the error's class name only (for example `detector-load / ReferenceError`); no message text and nothing from the frame is shown.
 - Glasses effect: drawn on the eye landmarks of each frame (follows head tilt), adjustable size. Glasses and face blur are exclusive: turning glasses on turns face blur off (the UI then says faces are visible); turning blur on turns glasses off; opening Privacy turns face blur on and glasses off (the preview is wiped at once and reopens with the next blurred frame); turning glasses off yourself does not turn blur back on. If the effect fails, glasses turn off and blur turns back on.
 - Snapshots: a PNG of the processed preview exactly as shown (blur, glasses, mirror), without face boxes or HUD and without metadata; kept in the tab until removed or the page closes. Available only while a processed frame is on screen.
 - Background: Off, Blur (three strengths) or Image — one at a time; Image is available only after an image is chosen. The person is cut out by a selfie segmentation model on the same frame; layers are background → person → glasses or face blur. A background never changes the blur/glasses choice.
@@ -24,6 +28,14 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 - JPEG/PNG upload → face detection → blurred preview → download.
 - Detected face count and a bounding-box toggle; manual rectangles drawn on the responsive preview (mouse or touch), mapped to original image pixels; remove any region before downloading.
 - Output is re-encoded from raw pixels in the input format, so EXIF (including GPS), ICC and PNG text metadata are not carried over. EXIF orientation is applied first.
+
+## Stack
+
+- Backend: Python 3.13, FastAPI + Uvicorn, OpenCV (Haar cascade), Pillow.
+- Frontend: plain HTML, CSS and JavaScript — no framework, no build step, no npm dependencies at runtime.
+- In-browser ML: MediaPipe Tasks Vision 1.0.1 (WebAssembly, CPU) in a module Web Worker; files are vendored, no CDN.
+- Deployment: Docker (non-root, read-only) behind the host's existing Nginx with Let's Encrypt.
+- Tests: pytest and Node's built-in test runner.
 
 ## Detectors
 
@@ -81,7 +93,7 @@ pip install -r requirements-dev.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Open http://127.0.0.1:8765. The camera works only on `localhost` or HTTPS. The live detector needs a browser with module workers and WebAssembly SIMD. Only Chrome has been tested so far; Safari before 18 has no canvas filters, so its blur falls back to pixelation only.
+Open http://127.0.0.1:8765. The camera works only on `localhost` or HTTPS. The live detector needs a browser with module workers and WebAssembly SIMD; which browsers have actually been tried is listed under [Testing status](#testing-status). Safari before 18 has no canvas filters, so its blur falls back to pixelation only.
 
 ## Docker
 
@@ -98,6 +110,8 @@ The camera needs HTTPS, so the app runs behind the host's existing Nginx (1.24.0
 On Nginx 1.24, HTTP/2 is the `http2` parameter of `listen` (`http2 on;` needs 1.25.1) and applies to every site on the same address:port; the deploy guide says how to check this before enabling it.
 
 Uploaded photos must not be written to disk anywhere, including the proxy. `deploy/nginx/live-camera-studio-proxy.conf` streams request bodies to the app (`proxy_request_buffering off`), keeps any held body in memory (`client_body_buffer_size` ≥ the 10 MB limit), and streams responses without temp files (`proxy_buffering off`, `proxy_max_temp_file_size 0`). It does not override the app's security headers.
+
+The production site at `camera.gotrips.cloud` uses this snippet with two host-specific changes to the example site file: `http2` is left out (the other sites on that port use HTTP/1.1) and so is `listen [::]:443` (the host has no IPv6 listener on 443). It is installed under `/etc/nginx/conf.d/`.
 
 Local checks (Docker):
 
@@ -122,11 +136,13 @@ node --test tests/js/*.test.mjs
 ```
 
 - Python: invalid/corrupt files, size and pixel limits, EXIF orientation, alpha flattening, region parsing and bounds, error codes, security headers (CSP, `Permissions-Policy`, worker CSP, no inline script/style), vendored files served, blur confined to regions, metadata stripping, and that a >1 MB upload opens no file for writing and adds nothing to the temp or project directories.
-- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use, glasses layer order and failures, snapshot source/mirror/disabled states, bitmap cleanup, messages from a replaced worker), the detector worker with fake MediaPipe tasks (detector and landmarker created one at a time), the snapshot/pagehide flow of the page shell, and EN/KO coverage plus the saved language choice.
+- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use, glasses layer order and failures, background masks, snapshot source/mirror/disabled states, bitmap cleanup, messages from a replaced worker, the failed stage and error class shown for camera, video, detector-load, detector-run, worker and render errors), the detector worker with fake MediaPipe tasks (tasks created one at a time, each with its own `OffscreenCanvas`), the page shell (snapshots, effect alert, background image, error card in EN/KO), and EN/KO coverage plus the saved language choice.
 
-These tests use synthetic images and fakes. **They do not measure face-detection quality.** `tests/test_deploy.py` guards the deployment files statically; `deploy/smoke/check.sh` is the behavioural check.
+These tests use synthetic images and fakes. **They do not measure face-detection quality**, and the worker tests do not run real MediaPipe or a real browser. `tests/test_deploy.py` guards the deployment files statically; `deploy/smoke/check.sh` is the behavioural check.
 
-### Live camera measurements
+## Testing status
+
+### Synthetic benchmark (fake camera)
 
 Measured 2026-10-08 on a MacBook Air (Apple M2, 8 cores, macOS 26.6.2), headless Chrome 154, MediaPipe running on the CPU (XNNPACK) in a Web Worker, 1280×720 frames. The "camera" was Chrome's fake capture device fed with MediaPipe's own test portrait (a still photo), **not a real webcam**:
 
@@ -140,9 +156,22 @@ Measured 2026-10-08 on a MacBook Air (Apple M2, 8 cores, macOS 26.6.2), headless
 | Background blur (detector + segmenter per frame) | 30 FPS; capture → displayed p95 17.8 ms |
 | Background image | 28 FPS; capture → displayed p95 17.8 ms |
 
-The fake camera shows a still photo, so these numbers say nothing about segmentation quality on real video (hair, hands, motion, several people).
+The fake camera shows a still photo, so these numbers say nothing about detection or segmentation quality on real video (hair, hands, motion, several people).
 
-The user ran real-webcam smoke tests on their Mac (reported as successful; no numbers recorded). Phones, Safari and Firefox have **not** been tested yet.
+### Real-device smoke tests (user-reported)
+
+These are informal checks reported by the author, not a formal compatibility test or an evaluation; no numbers were recorded.
+
+| Device / browser | Result (user report) |
+| --- | --- |
+| Mac, real webcam, local server (browser not recorded) | Live camera with face blur, glasses, snapshots, Stop and background worked |
+| Mac, production | Camera worked |
+| iPhone 15 Pro, Safari, production | Camera preview worked |
+| iPhone 15 Pro, Chrome, production | Camera preview worked after the fix below |
+
+Chrome on iOS first showed "Face detection stopped": MediaPipe 1.0.1 picks its WebGL canvas from the user agent and, for a WebKit user agent without `Version/17+` (as in Chrome on iOS), falls back to `document.createElement`, which does not exist in a worker. The worker now passes its own `OffscreenCanvas` to every MediaPipe task. The cause was reproduced locally with desktop Chrome and a Chrome-on-iOS user agent; the fix was confirmed on the iPhone by the author.
+
+**Not tested:** Firefox, Android, iPad, Windows and other devices; on the iPhone, only the camera preview was reported.
 
 ## Detection evaluation — not done yet
 
@@ -152,7 +181,15 @@ No real evaluation images have been provided, so precision/recall/count error ha
 - Metrics: face-level recall at IoU ≥ 0.5 (primary — a missed face is a privacy failure), precision, and per-image count error; small and profile/rotated faces reported separately.
 - Compare 2–3 `scaleFactor`/`minNeighbors` settings in `app/config.py` and record the chosen one.
 
-Known limitations until then: the Haar cascade is frontal-face only; BlazeFace short range targets faces within about 2 m of a front-facing camera. Both are likely to miss small, rotated, profile or occluded faces.
+## Known limitations
+
+- **No detection evaluation** (above). The Haar cascade is frontal-face only; BlazeFace short range targets faces within about 2 m of a front-facing camera. Both are likely to miss small, rotated, profile or occluded faces.
+- Live face boxes are padded by 25% — a heuristic for BlazeFace boxes, not validated on real faces.
+- Selfie segmentation is weak on hair, hands, fast motion and several people at different distances.
+- If the browser stops delivering video frames, or capturing a frame (`createImageBitmap`) keeps failing, the last fully processed frame stays on screen and snapshots stay enabled; there is no timeout or error card for this case. Nothing unprocessed is shown, but the preview can look frozen — use Turn off camera and turn it on again.
+- Browser coverage is limited to the smoke tests above.
+- Safari before 18 has no canvas filters, so blur falls back to pixelation.
+- The Korean strings are a draft and have not been reviewed by a native speaker.
 
 ## Project layout
 
@@ -164,7 +201,7 @@ app/blur.py                   Region parsing, padding/clipping, pixelate + Gauss
 app/static/index.html         Page (no inline script or style)
 app/static/shell.js           Tabs, language switcher, live camera UI
 app/static/camera.js          Live camera controller: lifecycle, fail-closed frame pipeline, canvas blur
-app/static/detector-worker.mjs  MediaPipe Face Detector in a module worker
+app/static/detector-worker.mjs  MediaPipe detector, landmarker and segmenter in a module worker
 app/static/app.js             Photo upload flow
 app/static/i18n.js, i18n/     EN/KO strings and the saved language choice
 app/static/vendor/mediapipe/  Vendored MediaPipe package files, model, LICENSE, SOURCES.md

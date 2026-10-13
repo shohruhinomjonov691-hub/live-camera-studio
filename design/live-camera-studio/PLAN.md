@@ -56,7 +56,7 @@ The mockup uses inline scripts and styles; it is not copied into the app, whose 
 | Denied | `NotAllowedError` | How to allow the camera, Try again, Photo upload |
 | No camera / busy | `NotFoundError`, `NotReadableError` | Check again, Photo upload |
 | Ended | `track.ended` | Camera stopped message |
-| Error | detector failure | Frame hidden, Restart detector |
+| Error | camera, video playback, detector loading or running, worker or render failure | Frame hidden; the card names the failed stage and the error's class name (no message text); Try again (camera, video) or Restart detector |
 
 ## Fail-closed frame pipeline
 
@@ -72,7 +72,8 @@ The mockup uses inline scripts and styles; it is not copied into the app, whose 
    canvas once. A new video frame is never drawn with older boxes, landmarks or masks.
 5. **Pending.** While a result is pending, the screen keeps the last fully processed frame. After 1000 ms, if face
    blur or a background is on, the canvases are cleared and the preview is hidden; the late result is ignored and
-   the next frame recovers.
+   the next frame recovers. The deadline belongs to a frame in flight: if no new frame arrives, or capturing one
+   fails, the last processed frame stays on screen (see Limitations).
 6. **Hide.** With face blur on and no face, on any detector or render error, or with a background on but no valid
    mask for this frame, every canvas is cleared and nothing of the frame is shown.
 7. **Settings changes.** Turning blur on, toggling glasses, or changing any background setting drops the frame in
@@ -116,6 +117,9 @@ The mockup uses inline scripts and styles; it is not copied into the app, whose 
 
 - All MediaPipe tasks are created one at a time: each creation consumes and clears `self.ModuleFactory`, and in a
   module worker the cached loader module does not run again, so the worker restores the factory before each task.
+- MediaPipe chooses its WebGL canvas from the user agent and, for a WebKit user agent without `Version/17+` (Chrome
+  on iOS), falls back to `document.createElement`, which a worker does not have. The worker therefore passes its own
+  `OffscreenCanvas` to every task.
 - Detection runs on the CPU (XNNPACK) in a module worker, so the UI thread is not blocked. No main-thread fallback
   was needed.
 - Measured with Chrome's fake camera fed with a still photo (Apple M2, headless Chrome 154, 1280×720, 30 fps
@@ -146,7 +150,11 @@ Landmarker and Selfie Segmenter models are Apache-2.0 per the package metadata a
 - **No quality evaluation yet.** Face detection (Haar for uploads, BlazeFace live), landmarks and segmentation have
   not been measured on annotated images; there are no precision/recall numbers. Planned: 20–30 consented or
   license-checked images with annotated faces; recall at IoU ≥ 0.5 as the primary metric.
-- Real-camera checks so far are informal smoke tests on one Mac. Phones, Safari and Firefox are untested.
+- Real-device checks are informal, user-reported smoke tests: a Mac with a real webcam, and the camera preview on an
+  iPhone 15 Pro in Safari and in Chrome (production). Firefox, Android and other devices are untested; this is not a
+  formal compatibility test.
+- If video frames stop arriving or capturing a frame keeps failing, the last processed frame stays on screen with no
+  timeout or error card. Nothing unprocessed is shown.
 - Korean strings are a draft and need a native-speaker review.
 - Live face boxes are padded by 25% (a heuristic for BlazeFace boxes, not yet validated on real faces).
 - Segmentation edges (hair, hands), motion and several people at different distances are known weak spots of the

@@ -45,7 +45,11 @@ sudo nginx -t && sudo systemctl reload nginx
 
 HTTP/2 on Nginx 1.24 is the `http2` parameter of `listen` and is shared by every site on the same address:port.
 If step 0 showed that the existing sites on 443 do **not** use `http2`, remove `http2` from the two `listen 443`
-lines before installing (the site then serves HTTP/1.1), so the other sites are not switched to HTTP/2.
+lines before installing (the site then serves HTTP/1.1), so the other sites are not switched to HTTP/2. If the host
+has no IPv6 listener on 443 (and no `AAAA` record for the name), leave out the `listen [::]:443` line as well.
+
+The production install at `camera.gotrips.cloud` uses `/etc/nginx/conf.d/`, without `http2` and without
+`listen [::]:443`, for exactly these reasons.
 
 ## 4. Verify
 
