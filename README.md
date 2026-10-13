@@ -55,6 +55,7 @@ Live camera:
 - Camera frames never leave the browser: the camera code makes no network requests, and frames go only to a same-origin worker as transferred `ImageBitmap`s.
 - The raw `<video>` is never shown. Each frame is captured once; the detector gets a copy and the blur is applied to that same frame with that frame's boxes — the preview never mixes old boxes with a newer frame.
 - While a result is pending, the preview keeps the last processed frame; after 1 s, on zero faces (with blur on) or on any error, the canvas is cleared.
+- A freshness watchdog never lets a processed frame stay on screen for more than 1 s without a newer one: if the camera stops delivering frames or capturing a frame (`createImageBitmap`) keeps failing, the canvas is cleared, snapshots are blocked and the preview says it is waiting for new frames; the next processed frame brings it back.
 - Every camera start is a session. A stream granted after Cancel, and detector results that arrive after Stop, are discarded (tracks stopped, bitmaps closed). Stop, hiding the page, closing it, switching to Photo upload and a camera that ends all stop the tracks and the render loop and clear the canvas.
 - Turning face blur off is a deliberate user choice: the live preview then shows faces unblurred, and the UI says so. Turning it back on clears the canvas at once; only a frame captured and processed with blur on reappears.
 - Glasses use landmarks computed on the same captured frame as the face boxes. Changing blur or glasses drops the frame in flight, so a result from the old mode never reaches the screen. If the landmarker fails to load or errors, or drawing the glasses fails, the app fails closed: glasses turn off and face blur turns back on (the frame being drawn is blurred; otherwise the canvas is wiped at once).
@@ -186,7 +187,7 @@ No real evaluation images have been provided, so precision/recall/count error ha
 - **No detection evaluation** (above). The Haar cascade is frontal-face only; BlazeFace short range targets faces within about 2 m of a front-facing camera. Both are likely to miss small, rotated, profile or occluded faces.
 - Live face boxes are padded by 25% — a heuristic for BlazeFace boxes, not validated on real faces.
 - Selfie segmentation is weak on hair, hands, fast motion and several people at different distances.
-- If the browser stops delivering video frames, or capturing a frame (`createImageBitmap`) keeps failing, the last fully processed frame stays on screen and snapshots stay enabled; there is no timeout or error card for this case. Nothing unprocessed is shown, but the preview can look frozen — use Turn off camera and turn it on again.
+- A capture failure (`createImageBitmap`) has no error card of its own: the pipeline keeps retrying and, after 1 s without a processed frame, the preview is hidden as stale (see Privacy).
 - Browser coverage is limited to the smoke tests above.
 - Safari before 18 has no canvas filters, so blur falls back to pixelation.
 - The Korean strings are a draft and have not been reviewed by a native speaker.

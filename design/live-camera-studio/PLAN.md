@@ -52,7 +52,7 @@ The mockup uses inline scripts and styles; it is not copied into the app, whose 
 | Permission | `getUserMedia` pending | Pointer to the browser prompt, Cancel |
 | Loading | stream and model starting | Progress; the frame is hidden |
 | Live | a processed frame is on screen | LIVE, face count, FPS and latency |
-| Hidden | no face with blur on, timeout, background not ready or failed, settings just changed | "Preview hidden" with the reason; HUD and controls stay usable; snapshots disabled |
+| Hidden | no face with blur on, timeout, no new processed frame for 1 s, background not ready or failed, settings just changed | "Preview hidden" with the reason; HUD and controls stay usable; snapshots disabled |
 | Denied | `NotAllowedError` | How to allow the camera, Try again, Photo upload |
 | No camera / busy | `NotFoundError`, `NotReadableError` | Check again, Photo upload |
 | Ended | `track.ended` | Camera stopped message |
@@ -72,8 +72,10 @@ The mockup uses inline scripts and styles; it is not copied into the app, whose 
    canvas once. A new video frame is never drawn with older boxes, landmarks or masks.
 5. **Pending.** While a result is pending, the screen keeps the last fully processed frame. After 1000 ms, if face
    blur or a background is on, the canvases are cleared and the preview is hidden; the late result is ignored and
-   the next frame recovers. The deadline belongs to a frame in flight: if no new frame arrives, or capturing one
-   fails, the last processed frame stays on screen (see Limitations).
+   the next frame recovers. The deadline belongs to a frame in flight and is cancelled with it, so a separate
+   freshness watchdog, armed whenever a processed frame is shown, clears the canvases and hides the preview
+   ("stale") when no newer processed frame follows within 1000 ms — for example when the camera stops delivering
+   frames or capture keeps failing. The next processed frame recovers.
 6. **Hide.** With face blur on and no face, on any detector or render error, or with a background on but no valid
    mask for this frame, every canvas is cleared and nothing of the frame is shown.
 7. **Settings changes.** Turning blur on, toggling glasses, or changing any background setting drops the frame in
@@ -153,8 +155,8 @@ Landmarker and Selfie Segmenter models are Apache-2.0 per the package metadata a
 - Real-device checks are informal, user-reported smoke tests: a Mac with a real webcam, and the camera preview on an
   iPhone 15 Pro in Safari and in Chrome (production). Firefox, Android and other devices are untested; this is not a
   formal compatibility test.
-- If video frames stop arriving or capturing a frame keeps failing, the last processed frame stays on screen with no
-  timeout or error card. Nothing unprocessed is shown.
+- A failing capture (`createImageBitmap`) has no error card of its own; it is retried, and the freshness watchdog
+  hides the preview after 1 s.
 - Korean strings are a draft and need a native-speaker review.
 - Live face boxes are padded by 25% (a heuristic for BlazeFace boxes, not yet validated on real faces).
 - Segmentation edges (hair, hands), motion and several people at different distances are known weak spots of the
