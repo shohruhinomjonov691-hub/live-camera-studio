@@ -20,6 +20,7 @@ window.LCS_I18N.en = {
   "hidden.noface": "No face detected, so the whole frame is hidden while face blur is on. Face the camera directly.",
   "hidden.timeout": "Face detection is taking too long, so the frame is hidden until it catches up.",
   "hidden.pending": "Face blur was turned on. The preview stays hidden until a frame has been processed with blur.",
+  "hidden.stale": "No new camera frame has been processed for a moment, so the preview is hidden. It comes back with the next processed frame.",
   "hidden.note": "Hiding reduces exposure but is not guaranteed anonymization.",
 
   "idle.title": "Camera is off",

@@ -1287,14 +1287,17 @@ test("[d1] background ON + blur OFF: a timeout wipes the canvas, blocks snapshot
   }
 });
 
-test("[d1] control: no background and blur OFF — a timeout keeps the last frame (nothing to hide)", async () => {
+test("[d1] control: no background and blur OFF — the job deadline hides nothing; only the freshness watchdog does", async () => {
   const h = setup();
   h.camera.setSettings({ blurOn: false });
   await goLive(h);
   await showFrame(h, FACE);
   await h.runFrame();
   h.fireTimers(1000);
-  assert.equal(h.state(), "live");
+  // The deadline alone would keep the frame (nothing to hide); the frame on screen is now 1 s old, so the
+  // freshness watchdog hides it as stale — never as a detection timeout.
+  assert.ok(!h.states.some(([state, info]) => state === "hidden" && info.why === "timeout"));
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "stale" }]);
 });
 
 test("[d2] a runtime mask error of the current frame puts the segmenter in error: hidden, no snapshot, Retry", async () => {
@@ -1478,4 +1481,92 @@ test("[r-ios] a crash before the camera stream arrives is still reported as work
   await flush();
   await flush();
   assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "WorkerError" }]);
+});
+
+// ---------- Freshness watchdog: a frame older than 1 s never stays on screen ----------
+
+async function liveFrame(h) {
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
+  assert.equal(h.state(), "live");
+}
+
+test("[fresh] live → capture keeps failing: after 1 s the canvas is cleared, snapshots blocked, hidden/stale", async () => {
+  const h = setup();
+  await goLive(h);
+  await liveFrame(h);
+  assert.ok(h.camera.snapshot(), "a live frame can be snapshotted");
+  h.env.createImageBitmap = () => Promise.reject(Object.assign(new Error("x"), { name: "InvalidStateError" }));
+  for (let i = 0; i < 5; i++) await h.runFrame(); // each failure drops its job (and that job's deadline)
+  assert.equal(h.state(), "live", "under 1 s the last processed frame may stay");
+  h.fireTimers(1000);
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "stale" }]);
+  assert.ok(cleared(h.env.view) && cleared(h.env.overlay) && cleared(h.buffer()));
+  assert.equal(h.camera.snapshot(), null);
+  assert.ok(h.pendingFrames() >= 1, "the pipeline keeps trying");
+});
+
+test("[fresh] no new video frame after a live frame: hidden/stale after 1 s", async () => {
+  const h = setup();
+  await goLive(h);
+  await liveFrame(h);
+  // No frame callback fires (the camera stopped delivering frames): no job, so no job deadline.
+  h.fireTimers(1000);
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "stale" }]);
+  assert.ok(cleared(h.env.view));
+  assert.equal(h.camera.snapshot(), null);
+});
+
+test("[fresh] the next processed frame recovers safely and re-arms the watchdog", async () => {
+  const h = setup();
+  await goLive(h);
+  await liveFrame(h);
+  const capture = h.env.createImageBitmap;
+  h.env.createImageBitmap = () => Promise.reject(new Error("x"));
+  await h.runFrame();
+  h.fireTimers(1000);
+  assert.equal(h.state(), "hidden");
+  h.env.createImageBitmap = capture;
+  await liveFrame(h);
+  assert.ok(h.camera.snapshot(), "snapshots work again with a fresh processed frame");
+  h.fireTimers(1000);
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "stale" }], "the new frame is guarded too");
+});
+
+test("[fresh] a frame shown within 1 s keeps the preview live", async () => {
+  const h = setup();
+  await goLive(h);
+  await liveFrame(h);
+  const first = h.timers.length - 1;
+  await liveFrame(h); // re-arms: the first watchdog is cancelled
+  assert.equal(h.timers.filter((t, i) => i <= first && !t.done).length, 0, "older timers are cancelled");
+  assert.equal(h.state(), "live");
+});
+
+test("[fresh] Stop and a new session: the old watchdog never hides the new session", async () => {
+  const h = setup();
+  await goLive(h);
+  await liveFrame(h);
+  const watchdog = h.timers.findLast((t) => t.ms === 1000 && !t.done);
+  h.camera.stop();
+  assert.equal(watchdog.done, true, "Stop cancels the watchdog");
+  await goLive(h);
+  await liveFrame(h);
+  watchdog.fn(); // a stale callback that still fires
+  assert.equal(h.state(), "live", "the old session's callback is ignored");
+  assert.ok(!cleared(h.env.view));
+});
+
+test("[fresh] an error state is not turned into hidden by the watchdog", async () => {
+  const h = setup();
+  await goLive(h);
+  await liveFrame(h);
+  const watchdog = h.timers.findLast((t) => t.ms === 1000 && !t.done);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "error", stage: "detect", session: msg.session, frameId: msg.frameId, message: "x" });
+  assert.equal(watchdog.done, true, "fail() cancels the watchdog");
+  watchdog.fn();
+  assert.equal(h.state(), "error");
 });

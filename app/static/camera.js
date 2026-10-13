@@ -239,6 +239,29 @@
       canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
     }
 
+    // Freshness watchdog: the frame on screen may be at most PENDING_TIMEOUT_MS old. A job's deadline belongs to
+    // the frame in flight and is cancelled with it (dropJob, e.g. after a failed capture), so it cannot catch a
+    // camera that stops delivering frames or a capture that keeps failing; this timer runs from the moment a
+    // processed frame is shown and is re-armed by the next one.
+    let freshTimer = null;
+
+    function armFreshness() {
+      disarmFreshness();
+      const session = camSession;
+      freshTimer = env.setTimeout(() => {
+        freshTimer = null;
+        if (session !== camSession || state !== "live") return; // stopped, restarted, or already hidden/error
+        clearView(); // also blocks snapshots: they need a live, ready view
+        setState("hidden", { why: "stale" });
+        schedule(); // keep trying; the next processed frame shows the preview again
+      }, PENDING_TIMEOUT_MS);
+    }
+
+    function disarmFreshness() {
+      if (freshTimer !== null) env.clearTimeout(freshTimer);
+      freshTimer = null;
+    }
+
     function clearView() {
       viewReady = false;
       clearCanvas(env.view);
@@ -434,6 +457,7 @@
     /** Fully stop: camera off, loop cancelled, pending work dropped, canvas cleared. */
     function stop(reason = null) {
       camSession++;
+      disarmFreshness();
       if (frameHandle !== null) env.cancelFrame(frameHandle);
       frameHandle = null;
       dropJob();
@@ -455,6 +479,7 @@
 
     /** kind: the stage that failed (load, detector, worker, render); name: the error's class name. */
     function fail(kind, name = "Error") {
+      disarmFreshness();
       if (frameHandle !== null) env.cancelFrame(frameHandle);
       frameHandle = null;
       dropJob();
@@ -570,6 +595,7 @@
           hideForBackground();
         } else if (compose(current.frame, faces, eyes, mask)) {
           setState("live", { faces: faces.length, blurOn: settings.blurOn });
+          armFreshness();
         } else {
           // An effect failure inside compose turned blur back on and there is no face to blur.
           setState("hidden", { why: "noface" });

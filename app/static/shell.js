@@ -111,6 +111,7 @@
         bgLoading: "hidden.bgLoading",
         bgError: "hidden.bgError",
         bgInvalid: "hidden.bgInvalid",
+        stale: "hidden.stale",
       }[info.why] || "hidden.noface";
     $("#hidden-why").textContent = t(why);
     if (state === "error") {

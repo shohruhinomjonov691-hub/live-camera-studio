@@ -512,3 +512,18 @@ test("[ios] a video.play() failure shows the video card with Try again", async (
   assert.equal(h.el("#error-code").textContent, "Error code: video / NotAllowedError");
   assert.equal(h.track.stopped, true);
 });
+
+// ---------- Freshness watchdog: the stale reason has its own text ----------
+
+test("[fresh] a stale preview says why (EN and KO), not the no-face text", async () => {
+  const h = loadShell({ realCamera: true });
+  const worker = await goLiveInShell(h);
+  const msg = await nextFrame(h, worker);
+  worker.onmessage({ data: { type: "result", session: msg.session, frameId: msg.frameId, faces: FACES } });
+  assert.equal(h.el("#ov-hidden").hidden, true, "live");
+  h.media.timers.filter((t) => t.ms === 1000).forEach((t) => t.fn());
+  assert.equal(h.el("#ov-hidden").hidden, false);
+  assert.equal(h.el("#hidden-why").textContent, EN("hidden.stale"));
+  h.context.i18n.setLang("ko");
+  assert.equal(h.el("#hidden-why").textContent.startsWith("잠시 동안"), true);
+});
