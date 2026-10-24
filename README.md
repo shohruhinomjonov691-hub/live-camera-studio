@@ -197,7 +197,8 @@ Chrome on iOS first showed "Face detection stopped": MediaPipe 1.0.1 picks its W
 
 - **Headless Chrome with real MediaPipe, fake camera** (desktop Chrome, a still portrait fed as video; 2026-10-24): the landmarks were found and drawn on the face; signals read "eyes open / mouth closed / facing camera"; a sequence of one face → empty frame → two faces → one face produced the states tracking → face not visible → several faces → tracking, with tracking lost/resumed logged; a hidden page and a disconnected camera (a dispatched `ended` event) ended the session and cleared the overlay; with permission denied the blocked-camera card appeared. The portrait's eyes are partly covered, so this says nothing about how well real eye closure is detected.
 - **The cue UI** was rendered by replacing the landmarks of real frames with synthetic closed-eye geometry (screenshot only).
-- **Not yet checked:** eye closure, blinking, yawning or head turns of a real person on a real camera; any accuracy of the signals. These need a real browser and camera.
+- **Author's manual smoke test, real camera** (local server, 2026-10-24; device and browser not recorded): the landmarks sat on the eyes and mouth; after calibration Eyes switched Open/Closed correctly; closing the eyes for more than 2 s raised the cue; normal blinking did not; losing the face reset the timer and the overlay; blur, Effects and snapshots still worked. One person, informal, no numbers — **not** an accuracy benchmark.
+- **Not checked:** accuracy across people, lighting, glasses or cameras; yawning and head-turn readings; phones and other browsers with the Live Monitor.
 
 ## Detection evaluation — not done yet
 
