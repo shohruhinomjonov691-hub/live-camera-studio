@@ -130,7 +130,7 @@ function loadShell({ realCamera = false } = {}) {
   };
   context.window = context;
   vm.createContext(context);
-  const files = ["i18n/en.js", "i18n/ko.js", "i18n.js", ...(realCamera ? ["camera.js"] : []), "shell.js"];
+  const files = ["i18n/en.js", "i18n/ko.js", "i18n.js", ...(realCamera ? ["camera.js"] : []), "monitor.js", "shell.js"];
   for (const file of files) vm.runInContext(read(file), context);
   return {
     context,
@@ -297,8 +297,11 @@ test("[ux] Privacy while glasses are on: blur ON, canvases wiped at once, old fr
   assert.equal(drawCount(view), draws, "the old glasses-mode frame never reaches the screen");
 
   const fresh = await nextFrame(h, worker);
-  assert.equal(fresh.landmarks, false);
-  worker.onmessage({ data: { type: "result", session: fresh.session, frameId: fresh.frameId, faces: FACES, inferMs: 5 } });
+  // The alertness monitor still asks for landmarks, but glasses are off: none may be drawn on this frame.
+  assert.equal(fresh.landmarks, true);
+  const arcsBefore = buffer.ops.filter((op) => op[0] === "arcTo").length;
+  worker.onmessage({ data: { type: "result", session: fresh.session, frameId: fresh.frameId, faces: FACES, eyes: EYES, inferMs: 5 } });
+  assert.equal(buffer.ops.filter((op) => op[0] === "arcTo").length, arcsBefore, "no glasses on the blurred frame");
   assert.equal(h.context.liveCamera.state, "live");
   assert.equal(h.el("#ov-hidden").hidden, true, "preview reopens with the blurred frame");
   assert.ok(buffer.ops.some((op) => op[0] === "clip"), "the new frame is blurred");
@@ -526,4 +529,144 @@ test("[fresh] a stale preview says why (EN and KO), not the no-face text", async
   assert.equal(h.el("#hidden-why").textContent, EN("hidden.stale"));
   h.context.i18n.setLang("ko");
   assert.equal(h.el("#hidden-why").textContent.startsWith("잠시 동안"), true);
+});
+
+// ---------- Alertness monitor UI (real camera controller + real monitor, fake worker) ----------
+// Landmarks are synthetic geometry with a known eye ratio; this checks the UI wiring, not detection quality.
+
+function marksFor(h, ear) {
+  const I = h.context.alertnessMonitorInternals;
+  const pts = [];
+  const g = ear * 30;
+  pts.push([100, 100], [110, 100 - g / 2], [120, 100 - g / 2], [130, 100], [120, 100 + g / 2], [110, 100 + g / 2]);
+  pts.push([170, 100], [180, 100 - g / 2], [190, 100 - g / 2], [200, 100], [190, 100 + g / 2], [180, 100 + g / 2]);
+  pts.push([150, 169], [150, 171], [130, 170], [170, 170]);
+  I.MONITOR_LANDMARKS.lips.forEach((_, i) => pts.push([150 + 24 * Math.cos(i), 170 + 10 * Math.sin(i)]));
+  pts.push([150, 140], [150, 200], [80, 120], [220, 120], [150, 40]);
+  I.MONITOR_LANDMARKS.oval.forEach((_, i) => pts.push([150 + 75 * Math.sin(i / 6), 120 - 85 * Math.cos(i / 6)]));
+  return [pts.flat()];
+}
+
+async function monitorFrame(h, worker, ear) {
+  const msg = await nextFrame(h, worker);
+  worker.onmessage({ data: { type: "result", session: msg.session, frameId: msg.frameId, faces: FACES, marks: marksFor(h, ear), landmarksError: null } });
+  return msg;
+}
+
+async function monitoring(h) {
+  const worker = await goLiveInShell(h);
+  assert.ok(worker.posted.some((m) => m.type === "init-landmarker"), "the monitor loads the landmarker");
+  worker.onmessage({ data: { type: "landmarker-ready", initMs: 1 } });
+  return worker;
+}
+
+test("[mon] the Live Monitor shows measured signals and the overlay toggle reaches the controller", async () => {
+  const h = loadShell({ realCamera: true });
+  const worker = await monitoring(h);
+  await monitorFrame(h, worker, 0.3);
+  assert.equal(h.el("#mon-live").hidden, false);
+  assert.equal(h.el("#mon-guide").hidden, true);
+  assert.equal(h.el("#sig-eyes").textContent, EN("signals.eyes.open"));
+  assert.equal(h.el("#sig-head").textContent, EN("signals.head.centered"));
+  assert.equal(h.el("#mon-status-title").textContent, EN("mon.st.tracking"));
+  h.toggle("#m-overlay", false);
+  assert.equal(h.context.liveCamera.settings.showLandmarks, false);
+  h.toggle("#m-overlay", true);
+  h.context.liveCameraShell.setTab("effects");
+  assert.equal(h.context.liveCamera.settings.showLandmarks, false, "no landmark overlay over the effects");
+  h.context.liveCameraShell.setTab("monitor");
+  assert.equal(h.context.liveCamera.settings.showLandmarks, true);
+  h.toggle("#m-blur", false);
+  assert.equal(h.context.liveCamera.settings.blurOn, false);
+  assert.equal(h.el("#t-blur").checked, false, "the Effects toggle follows");
+});
+
+test("[mon] a cue appears with its duration, shows in other views, and Dismiss hides it", async () => {
+  const h = loadShell({ realCamera: true });
+  const worker = await monitoring(h);
+  await monitorFrame(h, worker, 0.3);
+  // performance.now() moves on between frames; wait out the default 2 s with closed eyes.
+  const start = performance.now();
+  while (performance.now() - start < 2100) {
+    await monitorFrame(h, worker, 0.1);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await monitorFrame(h, worker, 0.1);
+  assert.equal(h.el("#mon-alert").hidden, false);
+  assert.match(h.el("#mon-alert-title").textContent, /^Eyes closed for \d+\.\d s$/);
+  assert.equal(h.el("#global-alert").hidden, true, "not duplicated on the monitor page");
+  h.context.liveCameraShell.setTab("history");
+  assert.equal(h.el("#global-alert").hidden, false, "visible from another view");
+  assert.equal(h.el("#view-camera").hidden, true);
+  assert.equal(h.context.liveCamera.active, true, "History keeps monitoring running");
+  h.el("#mon-alert-dismiss").listeners.click.forEach((fn) => fn());
+  assert.equal(h.el("#global-alert").hidden, true);
+  const types = h.context.liveCameraShell.monitor.snapshot().session.events.map((e) => e.type);
+  assert.ok(types.includes("alert"));
+});
+
+test("[mon] a stale preview resets the closure timer; Stop ends the session with its reason", async () => {
+  const h = loadShell({ realCamera: true });
+  const worker = await monitoring(h);
+  await monitorFrame(h, worker, 0.3);
+  await monitorFrame(h, worker, 0.1);
+  await new Promise((r) => setTimeout(r, 30));
+  await monitorFrame(h, worker, 0.1);
+  const m = h.context.liveCameraShell.monitor;
+  assert.ok(m.snapshot().closedMs > 0);
+  h.media.timers.filter((t) => t.ms === 1000).forEach((t) => t.fn()); // freshness watchdog: stale
+  assert.equal(h.context.liveCamera.state, "hidden");
+  assert.equal(m.snapshot().closedMs, 0, "no frames, no closure time");
+  h.context.liveCamera.stop("hidden"); // what the shell does when the page is hidden
+  const last = m.history()[0];
+  assert.ok(last.endedAt);
+  assert.equal(last.events.at(-1).type, "stopped");
+  assert.equal(last.events.at(-1).detail.reason, "hidden");
+  assert.equal(m.snapshot().active, false);
+  assert.equal(h.el("#mon-guide").hidden, false, "back to the start guide");
+});
+
+test("[mon] photo upload releases the camera and ends the session", async () => {
+  const h = loadShell({ realCamera: true });
+  const worker = await monitoring(h);
+  await monitorFrame(h, worker, 0.3);
+  h.context.liveCameraShell.setTab("upload");
+  assert.equal(h.context.liveCamera.active, false);
+  assert.equal(h.context.liveCameraShell.monitor.history()[0].events.at(-1).detail.reason, "stopped");
+  assert.equal(h.track.stopped, true);
+});
+
+test("[mon] settings: duration is clamped, sound is shared, history is cleared only after confirming", async () => {
+  const h = loadShell({ realCamera: true });
+  const m = h.context.liveCameraShell.monitor;
+  h.el("#s-duration").value = "9";
+  h.el("#s-duration").listeners.change.forEach((fn) => fn({ target: h.el("#s-duration") }));
+  assert.equal(m.snapshot().settings.alertAfterMs, 5000);
+  assert.equal(h.el("#s-duration").value, "5");
+  h.toggle("#s-sound", false);
+  assert.equal(m.snapshot().settings.sound, false);
+  assert.equal(h.el("#m-sound").checked, false, "the monitor panel toggle follows");
+
+  const worker = await monitoring(h);
+  await monitorFrame(h, worker, 0.3);
+  h.context.liveCamera.stop();
+  assert.equal(m.history().length, 1);
+  h.el("#s-clear").listeners.click.forEach((fn) => fn());
+  assert.equal(h.el("#s-clear-confirm").hidden, false);
+  assert.equal(m.history().length, 1, "nothing deleted before confirming");
+  h.el("#s-clear-yes").listeners.click.forEach((fn) => fn());
+  assert.equal(m.history().length, 0);
+  assert.equal(h.el("#s-clear-done").hidden, false);
+});
+
+test("[mon] the calibration button is enabled only while one face is tracked", async () => {
+  const h = loadShell({ realCamera: true });
+  h.context.liveCameraShell.setTab("settings");
+  assert.equal(h.el("#s-calibrate").disabled, true);
+  assert.equal(h.el("#s-cal-status").textContent, EN("set.cal.needCamera"));
+  const worker = await monitoring(h);
+  await monitorFrame(h, worker, 0.3);
+  assert.equal(h.el("#s-calibrate").disabled, false);
+  h.el("#s-calibrate").listeners.click.forEach((fn) => fn());
+  assert.equal(h.el("#s-cal-status").textContent, EN("set.cal.running"));
 });

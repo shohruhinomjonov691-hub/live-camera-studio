@@ -1,6 +1,7 @@
 "use strict";
 
-// Page shell: tabs, language switcher and the live camera UI around createCameraController (camera.js).
+// Page shell: views, language switcher, the live camera UI around createCameraController (camera.js) and the
+// alertness monitor UI around createAlertnessMonitor (monitor.js).
 (function () {
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -20,10 +21,47 @@
   };
   // effectAlert: the glasses effect failed (and blur came back). Cleared only by Dismiss or a retry.
   const ui = {
-    tab: "camera", camState: "idle", camInfo: null, stats: null, effect: "off", effectAlert: false, snapshots: [],
-    segmenter: "off", bgImageInfo: null, bgImageError: null,
+    tab: "monitor", camState: "idle", camInfo: null, stats: null, effect: "off", effectAlert: false, snapshots: [],
+    segmenter: "off", bgImageInfo: null, bgImageError: null, mon: null, histSel: null, histKey: "", lastBeep: 0,
+    overlay: true, // the user's landmark-overlay choice; drawn only in the Live Monitor view
   };
   const MAX_SNAPSHOTS = 6;
+  const CAMERA_VIEWS = ["monitor", "effects"];
+  const PAGE_KEYS = {
+    monitor: ["page.monitor", "page.monitor.sub"],
+    effects: ["page.effects", "page.effects.sub"],
+    history: ["page.history", "page.history.sub"],
+    settings: ["page.settings", "page.settings.sub"],
+    upload: ["page.upload", "page.upload.sub"],
+  };
+
+  // ---------- alertness monitor ----------
+  // Capture times are performance.now() values; events are shown in wall-clock time.
+  const toWall = (at) => Date.now() - (performance.now() - at);
+  const MONITOR_STORE = "lcs.monitor";
+  function loadMonitorSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(MONITOR_STORE) || "null");
+      return saved && typeof saved === "object" ? { alertAfterMs: saved.alertAfterMs, sound: saved.sound !== false } : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  function saveMonitorSettings(settings) {
+    try {
+      localStorage.setItem(MONITOR_STORE, JSON.stringify({ alertAfterMs: settings.alertAfterMs, sound: settings.sound }));
+    } catch (_) {
+      /* storage blocked: the choice lasts until the page closes */
+    }
+  }
+  const monitor = window.createAlertnessMonitor({
+    toWall,
+    settings: loadMonitorSettings(),
+    onChange: (snapshot) => {
+      ui.mon = snapshot;
+      renderMonitor();
+    },
+  });
 
   const video = $("#cam-video");
   const camera = window.createCameraController({
@@ -46,8 +84,13 @@
       ui.camState = state;
       ui.camInfo = info;
       if (state === "live") updateDeviceButtons();
+      monitorLifecycle(state, info);
       renderCamera();
+      renderMonitor();
     },
+    // Landmarks of each processed frame (or why there are none) feed the alertness monitor.
+    onAnalysis: (sample) => monitor.update(sample),
+    drawLandmarks: (ctx, marks, width) => window.alertnessMonitorInternals.drawMonitorLandmarks(ctx, marks, width),
     onStats: (stats) => {
       ui.stats = stats;
       renderPerf();
@@ -55,6 +98,7 @@
     onEffect: (status) => {
       ui.effect = status;
       renderEffect();
+      renderMonitor();
     },
     // The glasses effect failed while on: the controller turned glasses off and blur back on.
     // Say so (sticky) and sync the toggles.
@@ -75,25 +119,53 @@
     loadBackgroundImage,
     snapshots: () => ui.snapshots.slice(),
     selectMode: (mode) => selectMode(mode),
+    setTab: (tab) => setTab(tab),
+    monitor,
   };
+  // The monitor reads landmarks from every processed frame (eyes, mouth, head); it never changes the blur.
+  camera.setSettings({ monitor: true });
 
-  // ---------- tabs and language ----------
+  // ---------- views and language ----------
   function setTab(tab) {
+    if (!PAGE_KEYS[tab]) return;
     ui.tab = tab;
     $$("[data-tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
-    $("#view-camera").hidden = tab !== "camera";
+    $("#view-camera").hidden = !CAMERA_VIEWS.includes(tab);
+    $("#monitor-panel").hidden = tab !== "monitor";
+    $("#mon-extras").hidden = tab !== "monitor";
+    $("#fx-panel").hidden = tab !== "effects";
+    $("#view-history").hidden = tab !== "history";
+    $("#view-settings").hidden = tab !== "settings";
     $("#view-upload").hidden = tab !== "upload";
-    if (tab !== "camera" && camera.active) camera.stop(); // leaving the camera tab releases the camera
+    // The photo upload releases the camera (as before). History and Settings keep monitoring running.
+    if (tab === "upload" && camera.active) camera.stop();
+    applyOverlay();
+    renderPage();
+    renderMonitor();
+    if (tab === "history") renderHistory(true);
+    if (tab === "settings") renderMonitorSettings();
   }
   $$("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+  $$("[data-tab-go]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tabGo)));
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.goto)));
+  $("#cam-status").addEventListener("click", () => setTab("monitor"));
+
+  function renderPage() {
+    const [title, sub] = PAGE_KEYS[ui.tab];
+    $("#page-title").textContent = t(title);
+    $("#page-sub").textContent = t(sub);
+  }
   $$("[data-lang]").forEach((b) => b.addEventListener("click", () => window.i18n.setLang(b.dataset.lang)));
   window.i18n.onChange(() => {
+    renderPage();
     renderCamera();
     renderSettings();
     renderEffect();
     renderShots();
     renderBackground();
+    renderMonitor();
+    renderMonitorSettings();
+    renderHistory(true);
   });
 
   // ---------- camera ----------
@@ -419,6 +491,8 @@
   function renderSettings() {
     const s = camera.settings;
     $("#t-blur").checked = s.blurOn;
+    $("#m-blur").checked = s.blurOn;
+    $("#m-overlay").checked = ui.overlay;
     $("#blur-off-warn").hidden = s.blurOn;
     $("#t-boxes").checked = s.showBoxes;
     $$("[data-method]").forEach((p) => p.setAttribute("aria-pressed", String(p.dataset.method === s.method)));
@@ -448,6 +522,19 @@
     renderSettings();
   });
 
+  $("#m-blur").addEventListener("change", (e) => {
+    camera.setSettings({ blurOn: e.target.checked }); // ON turns glasses OFF and wipes the preview at once
+    renderAllSettings();
+  });
+  $("#m-overlay").addEventListener("change", (e) => {
+    ui.overlay = e.target.checked;
+    applyOverlay();
+  });
+  /** The landmark overlay belongs to the Live Monitor; the Effects view shows the effects alone. */
+  function applyOverlay() {
+    camera.setSettings({ showLandmarks: ui.overlay && ui.tab === "monitor" });
+  }
+
   function selectMode(mode) {
     $$("[data-mode]").forEach((x) => x.setAttribute("aria-selected", String(x.dataset.mode === mode)));
     ["privacy", "effects", "background"].forEach((m) => ($(`#p-${m}`).hidden = m !== mode));
@@ -458,7 +545,344 @@
   }
   $$("[data-mode]").forEach((b) => b.addEventListener("click", () => selectMode(b.dataset.mode)));
 
+  // ---------- alertness monitor UI ----------
+  const STREAM_STATES = ["live", "hidden"];
+  const END_REASONS = { idle: "stopped", ended: "ended", error: "error", denied: "stopped", nocam: "stopped", insecure: "stopped" };
+
+  /** Sessions follow the camera: every stop, end, error or hidden page ends one; stale frames interrupt it. */
+  function monitorLifecycle(state, info) {
+    const now = performance.now();
+    if (state === "hidden" && info && (info.why === "stale" || info.why === "timeout")) monitor.interrupt(now, info.why);
+    if (END_REASONS[state] && monitor.snapshot().active) {
+      const reason = state === "idle" && info && (info.reason === "hidden" || info.reason === "ended") ? info.reason : END_REASONS[state];
+      monitor.endSession(now, reason);
+    }
+  }
+
+  const fmtSec = (ms) => (ms / 1000).toFixed(1);
+  const locale = () => (window.i18n.lang === "ko" ? "ko-KR" : "en-US");
+  const fmtTime = (wall) => new Date(wall).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const fmtClock = (wall) => new Date(wall).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" });
+  const fmtDate = (wall) => new Date(wall).toLocaleDateString(locale(), { year: "numeric", month: "short", day: "numeric" });
+  function fmtDuration(ms) {
+    const total = Math.max(0, Math.round(ms / 1000));
+    const m = Math.floor(total / 60);
+    return m ? t("time.min", { m, s: total % 60 }) : t("time.sec", { s: total });
+  }
+
+  const STATUS = {
+    waiting: ["mon.st.waiting", "mon.st.waiting.sub", "wait"],
+    tracking: ["mon.st.tracking", "mon.st.tracking.sub", "ok"],
+    noface: ["mon.st.noface", "mon.st.noface.sub", "warn"],
+    multiple: ["mon.st.multiple", "mon.st.multiple.sub", "warn"],
+    invalid: ["mon.st.invalid", "mon.st.invalid.sub", "warn"],
+    turned: ["mon.st.turned", "mon.st.turned.sub", "warn"],
+    paused: ["mon.st.paused", "mon.st.paused.sub", "wait"],
+    unavailable: ["mon.st.unavailable", "mon.st.unavailable.sub", "danger"],
+  };
+
+  function eventText(e) {
+    const d = e.detail || {};
+    const label = t(`ev.${e.type}`);
+    let detail = "";
+    if (e.type === "alert") detail = t("ev.alert.detail", { s: fmtSec(d.closedMs), t: fmtSec(d.afterMs) });
+    else if (e.type === "reopened") detail = t("ev.reopened.detail", { s: fmtSec(d.closedMs) });
+    else if (e.type === "stopped" || e.type === "alertEnded") detail = t(`ev.reason.${d.reason}`);
+    else if (e.type === "lost") detail = t("ev.lost.detail");
+    return { label, detail };
+  }
+
+  function renderMonitor() {
+    const snap = ui.mon || monitor.snapshot();
+    const streaming = STREAM_STATES.includes(ui.camState);
+    const active = streaming || ui.camState === "loading";
+    const onMonitor = ui.tab === "monitor";
+    $("#mon-guide").hidden = active;
+    $("#mon-live").hidden = !active;
+    $("#mon-steps").hidden = active;
+    $("#mon-chart-card").hidden = !active;
+    $("#mon-events-card").hidden = !(active || (snap.session && snap.session.events.length));
+
+    // Signals: only measured values; "—" when there is no tracked face.
+    const tracked = snap.status === "tracking" || snap.status === "turned";
+    $("#sig-eyes").textContent = snap.eyes === "unknown" ? "—" : t(`signals.eyes.${snap.eyes}`);
+    $("#sig-mouth").textContent = tracked && snap.mouth !== "unknown" ? t(`signals.mouth.${snap.mouth}`) : "—";
+    $("#sig-head").textContent = tracked && snap.head !== "unknown" ? t(`signals.head.${snap.head}`) : "—";
+    $("#sig-eyes").className = snap.eyes === "closed" ? "warn" : snap.eyes === "open" ? "ok" : "";
+    const after = fmtSec(snap.settings.alertAfterMs);
+    $("#mon-closure").textContent =
+      snap.status === "tracking" ? t(snap.eyes === "closed" ? "mon.closure.closed" : "mon.closure.open", { s: fmtSec(snap.closedMs), t: after }) : t("mon.closure.none", { t: after });
+    $("#mon-closure").classList.toggle("warn", snap.eyes === "closed");
+
+    const status = snap.status;
+    const [titleKey, bodyKey, tone] = STATUS[status] || STATUS.waiting;
+    // The cue has its own card above; this card keeps describing the tracking state.
+    $("#mon-status-title").textContent = t(titleKey);
+    $("#mon-status-body").textContent = t(status === "waiting" && ui.effect === "loading" ? "mon.st.loading.sub" : bodyKey);
+    $("#mon-status-dot").className = `status-dot ${tone}`;
+    $("#mon-retry").hidden = status !== "unavailable";
+
+    const alert = snap.alert;
+    $("#mon-alert").hidden = !alert;
+    if (alert) $("#mon-alert-title").textContent = t("alert.title", { s: fmtSec(alert.closedMs) });
+    $("#global-alert").hidden = !(alert && !onMonitor);
+    if (alert) $("#global-alert-text").textContent = t("alert.global", { s: fmtSec(alert.closedMs) });
+    soundFor(alert, snap.settings.sound);
+
+    $("#mon-pause-label").textContent = t(snap.paused ? "mon.resume" : "mon.pause");
+    $("#mon-pause").disabled = !snap.active;
+    $("#m-sound").checked = snap.settings.sound;
+
+    const showStatus = active && !CAMERA_VIEWS.includes(ui.tab);
+    $("#cam-status").hidden = !showStatus;
+    if (showStatus) $("#cam-status-text").textContent = t(snap.paused ? "cam.status.paused" : "cam.status.on");
+
+    if (onMonitor && active) {
+      drawChart(snap);
+      renderEvents(snap);
+    }
+    if (ui.tab === "history") renderHistory(false);
+    if (ui.tab === "settings") renderCalibration(snap);
+  }
+
+  function drawChart(snap) {
+    const canvas = $("#mon-chart");
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const points = snap.chart;
+    $("#chart-empty").hidden = points.length > 0;
+    $("#chart-note").textContent = t(snap.calibrated ? "chart.calibrated" : "chart.default");
+    const internals = window.alertnessMonitorInternals;
+    const y = (v) => h - 6 - (Math.max(0, Math.min(1.3, v)) / 1.3) * (h - 12);
+    ctx.strokeStyle = "rgba(245, 184, 74, 0.6)";
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(0, y(internals.CLOSE_RATIO));
+    ctx.lineTo(w, y(internals.CLOSE_RATIO));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (!points.length) return;
+    const end = points[points.length - 1].at;
+    const x = (at) => w - ((end - at) / 30000) * w;
+    ctx.strokeStyle = "#38d6f0";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let prev = null;
+    for (const p of points) {
+      // A gap (no tracked face) breaks the line instead of joining unrelated samples.
+      if (prev === null || p.at - prev > 1000) ctx.moveTo(x(p.at), y(p.value));
+      else ctx.lineTo(x(p.at), y(p.value));
+      prev = p.at;
+    }
+    ctx.stroke();
+  }
+
+  function renderEvents(snap) {
+    const list = $("#mon-events");
+    const events = snap.session ? snap.session.events : [];
+    const key = `${snap.session && snap.session.id}:${events.length}:${window.i18n.lang}`;
+    if (list.dataset.key === key) return;
+    list.dataset.key = key;
+    list.replaceChildren();
+    events.slice(-8).reverse().forEach((e) => list.append(eventRow(e, "li")));
+  }
+
+  function eventRow(e, tag) {
+    const { label, detail } = eventText(e);
+    const row = document.createElement(tag);
+    row.className = `ev ev-${e.type}`;
+    const cells = tag === "tr" ? ["td", "td", "td"] : ["span", "b", "span"];
+    [fmtTime(e.wall), label, detail].forEach((text, i) => {
+      const cell = document.createElement(cells[i]);
+      cell.textContent = text;
+      row.append(cell);
+    });
+    return row;
+  }
+
+  // ---------- sound ----------
+  // Browsers allow audio only after a user gesture, so the context is created on the first click or key press.
+  let audio = null;
+  function unlockAudio() {
+    try {
+      const Context = window.AudioContext || window.webkitAudioContext;
+      if (!audio && Context) audio = new Context();
+      if (audio && audio.state === "suspended") audio.resume();
+    } catch (_) {
+      audio = null;
+    }
+  }
+  document.addEventListener("pointerdown", unlockAudio);
+  document.addEventListener("keydown", unlockAudio);
+
+  function beep() {
+    if (!audio) return;
+    try {
+      const t0 = audio.currentTime;
+      for (const offset of [0, 0.32]) {
+        const osc = audio.createOscillator();
+        const gain = audio.createGain();
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, t0 + offset);
+        gain.gain.exponentialRampToValueAtTime(0.2, t0 + offset + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + offset + 0.24);
+        osc.connect(gain);
+        gain.connect(audio.destination);
+        osc.start(t0 + offset);
+        osc.stop(t0 + offset + 0.26);
+      }
+    } catch (_) {
+      /* no sound on this device */
+    }
+  }
+
+  /** Beep when a cue starts, then every 4 s while it lasts (unless muted or dismissed). */
+  function soundFor(alert, enabled) {
+    if (!alert || !enabled) {
+      if (!alert) ui.lastBeep = 0;
+      return;
+    }
+    const now = performance.now();
+    if (!ui.lastBeep || now - ui.lastBeep >= 4000) {
+      ui.lastBeep = now;
+      beep();
+    }
+  }
+
+  // ---------- monitor controls ----------
+  $("#mon-alert-dismiss").addEventListener("click", () => monitor.dismissAlert());
+  $("#mon-pause").addEventListener("click", () => {
+    const now = performance.now();
+    if (monitor.snapshot().paused) monitor.resume(now);
+    else monitor.pause(now);
+  });
+  $("#mon-retry").addEventListener("click", () => camera.retryLandmarks());
+  function setSound(on) {
+    monitor.setSettings({ sound: on });
+    saveMonitorSettings(monitor.snapshot().settings);
+    renderMonitorSettings();
+  }
+  $("#m-sound").addEventListener("change", (e) => setSound(e.target.checked));
+  $("#s-sound").addEventListener("change", (e) => setSound(e.target.checked));
+  $("#s-duration").addEventListener("change", (e) => {
+    monitor.setSettings({ alertAfterMs: Number(e.target.value) * 1000 });
+    saveMonitorSettings(monitor.snapshot().settings);
+    renderMonitorSettings(); // shows the clamped value
+  });
+  $("#s-calibrate").addEventListener("click", () => monitor.calibrate(performance.now()));
+  $("#s-cal-reset").addEventListener("click", () => monitor.resetCalibration());
+  $("#s-clear").addEventListener("click", () => {
+    $("#s-clear-confirm").hidden = false;
+    $("#s-clear-done").hidden = true;
+  });
+  $("#s-clear-no").addEventListener("click", () => ($("#s-clear-confirm").hidden = true));
+  $("#s-clear-yes").addEventListener("click", () => {
+    monitor.clearHistory();
+    ui.histSel = null;
+    $("#s-clear-confirm").hidden = true;
+    $("#s-clear-done").hidden = false;
+    renderHistory(true);
+  });
+
+  function renderMonitorSettings() {
+    const s = monitor.snapshot().settings;
+    $("#s-sound").checked = s.sound;
+    $("#m-sound").checked = s.sound;
+    $("#s-duration").value = String(s.alertAfterMs / 1000);
+    renderCalibration(monitor.snapshot());
+  }
+
+  function renderCalibration(snap) {
+    const ready = snap.status === "tracking" && !snap.paused;
+    const running = snap.calibration === "running";
+    $("#s-calibrate").disabled = !ready || running;
+    const key = running ? "set.cal.running" : snap.calibration === "failed" ? "set.cal.failed" : snap.calibrated ? "set.cal.done" : ready ? "set.cal.ready" : "set.cal.needCamera";
+    $("#s-cal-status").textContent = t(key);
+    $("#s-cal-status").classList.toggle("error", snap.calibration === "failed");
+    $("#s-cal-reset").hidden = !snap.calibrated;
+  }
+
+  // ---------- history ----------
+  function renderHistory(force) {
+    const sessions = monitor.history();
+    const current = sessions.find((x) => x.id === ui.histSel) || sessions[0] || null;
+    const key = `${sessions.length}:${sessions.map((x) => x.events.length).join(",")}:${current && current.id}:${window.i18n.lang}`;
+    if (!force && key === ui.histKey) return;
+    ui.histKey = key;
+    const list = $("#hist-list");
+    list.replaceChildren();
+    $("#hist-empty").hidden = sessions.length > 0;
+    sessions.forEach((x) => {
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "hist-item";
+      button.setAttribute("aria-pressed", String(current && x.id === current.id));
+      const date = document.createElement("b");
+      date.textContent = fmtDate(x.startedAt);
+      const time = document.createElement("span");
+      time.textContent = `${fmtClock(x.startedAt)} – ${x.endedAt ? fmtClock(x.endedAt) : t("hist.now")}`;
+      const tag = document.createElement("span");
+      tag.className = x.alerts ? "tag warn" : "tag";
+      tag.textContent = x.endedAt ? t("hist.cueCount", { n: x.alerts }) : t("hist.running");
+      button.append(date, time, tag);
+      button.addEventListener("click", () => {
+        ui.histSel = x.id;
+        renderHistory(true);
+      });
+      li.append(button);
+      list.append(li);
+    });
+    $("#hist-detail").hidden = !current;
+    if (!current) return;
+    const end = current.endedAt || Date.now();
+    $("#hist-running").hidden = Boolean(current.endedAt);
+    $("#hist-date").textContent = fmtDate(current.startedAt);
+    $("#hist-time").textContent = `${fmtClock(current.startedAt)} – ${current.endedAt ? fmtClock(current.endedAt) : t("hist.now")}`;
+    $("#hist-duration").textContent = fmtDuration(end - current.startedAt);
+    $("#hist-cues").textContent = String(current.alerts);
+    const body = $("#hist-events");
+    body.replaceChildren();
+    current.events.forEach((e) => body.append(eventRow(e, "tr")));
+    drawTimeline(current, end);
+  }
+
+  const EVENT_COLORS = { alert: "#f5b84a", lost: "#ff7b7b", multiple: "#ff7b7b", invalid: "#ff7b7b", stopped: "#7f8ea3" };
+  function drawTimeline(session, end) {
+    const canvas = $("#hist-timeline");
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const span = Math.max(1000, end - session.startedAt);
+    const x = (wall) => 10 + ((wall - session.startedAt) / span) * (w - 20);
+    ctx.strokeStyle = "#2b3a4f";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(10, 22);
+    ctx.lineTo(w - 10, 22);
+    ctx.stroke();
+    for (const e of session.events) {
+      ctx.fillStyle = EVENT_COLORS[e.type] || "#38d6f0";
+      ctx.beginPath();
+      ctx.arc(x(e.wall), 22, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#95a0b1";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textBaseline = "top";
+    ctx.textAlign = "left";
+    ctx.fillText(fmtClock(session.startedAt), 4, 36);
+    ctx.textAlign = "right";
+    ctx.fillText(fmtClock(end), w - 4, 36);
+  }
+
   window.i18n.apply();
+  renderPage();
+  renderMonitorSettings();
+  renderMonitor();
   renderSettings();
   renderEffect();
   renderShots();

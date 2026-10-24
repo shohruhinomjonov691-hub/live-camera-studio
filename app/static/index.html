@@ -11,27 +11,51 @@
   <script src="/static/i18n/ko.js" defer></script>
   <script src="/static/i18n.js" defer></script>
   <script src="/static/camera.js" defer></script>
+  <script src="/static/monitor.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/shell.js" defer></script>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Live Camera Studio</span></div>
-  <nav class="tabs" role="tablist" data-i18n-aria="tab.label" aria-label="Section">
-    <button type="button" role="tab" id="tab-camera" data-tab="camera" aria-selected="true" aria-controls="view-camera" data-i18n="tab.camera">Live camera</button>
-    <button type="button" role="tab" id="tab-upload" data-tab="upload" aria-selected="false" aria-controls="view-upload" data-i18n="tab.upload">Photo upload</button>
+<div class="app">
+<aside class="sidebar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text"><b>Camera Studio</b><small data-i18n="brand.sub">Alertness Monitor</small></span></div>
+  <nav class="nav" role="tablist" data-i18n-aria="tab.label" aria-label="Section">
+    <button type="button" role="tab" id="tab-monitor" data-tab="monitor" aria-selected="true" aria-controls="view-camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg><span data-i18n="nav.monitor">Live Monitor</span></button>
+    <button type="button" role="tab" id="tab-effects" data-tab="effects" aria-selected="false" aria-controls="view-camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.9 5.8H20l-4.9 3.6 1.9 5.8L12 14.6l-4.9 3.6 1.9-5.8L4 8.8h6.1z"/></svg><span data-i18n="nav.effects">Effects</span></button>
+    <button type="button" role="tab" id="tab-history" data-tab="history" aria-selected="false" aria-controls="view-history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span data-i18n="nav.history">Session history</span></button>
+    <button type="button" role="tab" id="tab-settings" data-tab="settings" aria-selected="false" aria-controls="view-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span data-i18n="nav.settings">Settings</span></button>
+    <button type="button" role="tab" id="tab-upload" data-tab="upload" aria-selected="false" aria-controls="view-upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg><span data-i18n="tab.upload">Photo upload</span></button>
   </nav>
-  <div class="top-right">
+  <div class="sidebar-foot">
     <span class="privacy-pill" data-i18n-title="pill.local.title"><i></i><span data-i18n="pill.local">Live frames stay on this device</span></span>
+  </div>
+</aside>
+
+<div class="main">
+<header class="topbar">
+  <div class="brand mobile-only"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text"><b>Camera Studio</b><small data-i18n="brand.sub">Alertness Monitor</small></span></div>
+  <div class="page-head">
+    <h1 id="page-title">Live Monitor</h1>
+    <p id="page-sub"></p>
+  </div>
+  <div class="top-right">
+    <button type="button" class="cam-status" id="cam-status" hidden><span class="dot"></span><span id="cam-status-text"></span></button>
     <div class="lang" role="group" data-i18n-aria="lang.label" aria-label="Language">
       <button type="button" data-lang="en" lang="en" aria-pressed="true">EN</button>
-      <button type="button" data-lang="ko" lang="ko" aria-pressed="false">한국어</button>
+      <button type="button" data-lang="ko" lang="ko" aria-pressed="false">KO</button>
     </div>
   </div>
 </header>
 
+<!-- Shown in every view while a drowsiness cue is active, so it is not missed outside the monitor. -->
+<div class="global-alert" id="global-alert" role="alert" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+  <span id="global-alert-text"></span>
+  <button type="button" class="btn small" data-tab-go="monitor" data-i18n="alert.view">View</button>
+</div>
+
 <!-- ============ LIVE CAMERA ============ -->
-<main id="view-camera" class="layout" role="tabpanel" aria-labelledby="tab-camera">
+<main id="view-camera" class="layout" role="tabpanel" aria-labelledby="tab-monitor">
   <section class="stage-col">
     <div class="stage" id="cam-stage">
       <!-- The raw video is only a source for captured frames and is never displayed. -->
@@ -177,13 +201,103 @@
       <button type="button" class="btn primary" data-act="snap" disabled data-i18n-title="snap.disabled"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg><span data-i18n="ctrl.snap">Snapshot</span></button>
     </div>
 
+    <!-- Live Monitor only: start steps before the camera is on; chart and events while it runs. -->
+    <div class="mon-extras" id="mon-extras">
+      <section class="card steps-card" id="mon-steps">
+        <ol class="start-steps">
+          <li><span class="num">1</span><span><b data-i18n="start.s1">Allow camera</b><small data-i18n="start.s1.sub">Give this page access to your camera.</small></span></li>
+          <li><span class="num">2</span><span><b data-i18n="start.s2">Adjust your position</b><small data-i18n="start.s2.sub">Follow the positioning guide.</small></span></li>
+          <li><span class="num">3</span><span><b data-i18n="start.s3">Monitoring starts</b><small data-i18n="start.s3.sub">Signals appear as soon as a face is tracked.</small></span></li>
+        </ol>
+        <button type="button" class="btn primary wide" data-act="start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg><span data-i18n="start.cta">Enable camera</span></button>
+      </section>
+
+      <section class="card" id="mon-chart-card" hidden>
+        <div class="row"><h3><span data-i18n="chart.title">Eye openness</span> <span class="meta" data-i18n="chart.relative">(relative)</span></h3><span class="meta" id="chart-note"></span></div>
+        <div class="chart-wrap">
+          <span class="axis top" data-i18n="chart.open">More open</span>
+          <canvas id="mon-chart" width="720" height="120" data-i18n-aria="chart.aria" aria-label="Eye openness over the last 30 seconds"></canvas>
+          <span class="axis bottom" data-i18n="chart.closed">More closed</span>
+        </div>
+        <div class="chart-ticks"><span data-i18n="chart.t30">30 s ago</span><span data-i18n="chart.t20">20 s ago</span><span data-i18n="chart.t10">10 s ago</span><span data-i18n="chart.now">Now</span></div>
+        <p class="fineprint" id="chart-empty" data-i18n="chart.empty">No measurements yet — the chart shows only real frames with a tracked face.</p>
+      </section>
+
+      <section class="card" id="mon-events-card" hidden>
+        <div class="row"><h3 data-i18n="events.title">Session events</h3><span class="meta" data-i18n="events.memory">This tab only</span></div>
+        <ul class="events" id="mon-events"></ul>
+      </section>
+    </div>
+
     <p class="notice" role="note">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
       <span><strong data-i18n="notice.strong">Automatic detection does not guarantee that every face is found.</strong> <span data-i18n="notice.camera">Side, small, distant or partly covered faces may be missed.</span></span>
     </p>
   </section>
 
-  <aside class="panel" data-i18n-aria="panel.label" aria-label="Settings">
+  <!-- ============ LIVE MONITOR PANEL ============ -->
+  <section class="panel mon-panel" id="monitor-panel" data-i18n-aria="nav.monitor" aria-label="Live Monitor">
+    <div class="panel-body" id="mon-guide">
+      <h3 data-i18n="guide.title">Positioning guide</h3>
+      <p class="sub" data-i18n="guide.sub">For a stable and clear view, follow the guide below.</p>
+      <svg class="guide-art" viewBox="0 0 240 180" aria-hidden="true">
+        <path d="M70 26h-22v22M170 26h22v22M70 154h-22v-22M170 154h22v-22" fill="none" stroke="#38d6f0" stroke-width="4" stroke-linecap="round"/>
+        <ellipse cx="120" cy="86" rx="38" ry="48" fill="#1a2b3d" stroke="#5b7a95" stroke-width="2"/>
+        <path d="M60 180c6-30 30-44 60-44s54 14 60 44" fill="#1a2b3d" stroke="#5b7a95" stroke-width="2"/>
+        <ellipse cx="105" cy="80" rx="6" ry="4" fill="#cfe9f2"/><ellipse cx="135" cy="80" rx="6" ry="4" fill="#cfe9f2"/>
+        <path d="M110 108q10 6 20 0" fill="none" stroke="#cfe9f2" stroke-width="2" stroke-linecap="round"/>
+        <path d="M120 20v150M64 80h112" stroke="#38d6f0" stroke-width="1" stroke-dasharray="4 4" opacity=".7"/>
+      </svg>
+      <ul class="tips">
+        <li><b data-i18n="guide.t1">Keep your face centered</b><span data-i18n="guide.t1.sub">Position your face within the frame, about an arm’s length away.</span></li>
+        <li><b data-i18n="guide.t2">Use good lighting</b><span data-i18n="guide.t2.sub">Light from the front helps the landmarks stay stable.</span></li>
+        <li><b data-i18n="guide.t3">Keep your eyes visible</b><span data-i18n="guide.t3.sub">Hair, reflections on glasses or deep shadows make eye readings unreliable.</span></li>
+      </ul>
+    </div>
+
+    <div class="panel-body" id="mon-live" hidden>
+      <h3 data-i18n="signals.title">Visible signals</h3>
+      <ul class="signals">
+        <li><span data-i18n="signals.eyes">Eyes</span><b id="sig-eyes"></b></li>
+        <li><span data-i18n="signals.mouth">Mouth</span><b id="sig-mouth"></b></li>
+        <li><span data-i18n="signals.head">Head</span><b id="sig-head"></b></li>
+      </ul>
+      <div class="closure" id="mon-closure"></div>
+
+      <div class="alert-card" id="mon-alert" role="alert" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <div><b id="mon-alert-title"></b><span data-i18n="alert.cue">Possible drowsiness cue</span><small data-i18n="alert.disclaimer">Based on visible signals, not a diagnosis.</small></div>
+        <button type="button" class="btn small" id="mon-alert-dismiss" data-i18n="alert.dismiss">Dismiss alert</button>
+      </div>
+
+      <div class="mon-status" id="mon-status">
+        <span class="status-dot" id="mon-status-dot"></span>
+        <div><b id="mon-status-title"></b><p id="mon-status-body"></p></div>
+        <button type="button" class="btn small ghost" id="mon-retry" hidden data-i18n="mon.retry">Retry</button>
+      </div>
+
+      <div class="mon-actions">
+        <button type="button" class="btn ghost accent" id="mon-pause"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14M16 5v14"/></svg><span id="mon-pause-label" data-i18n="mon.pause">Pause session</span></button>
+        <button type="button" class="btn danger-soft" data-act="stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span data-i18n="mon.stop">Stop camera</span></button>
+      </div>
+      <div class="hr"></div>
+      <div class="row">
+        <label for="m-sound"><span class="label" data-i18n="set.sound">Sound alert</span><span class="sub" data-i18n="set.sound.sub">Play a sound when a cue is raised.</span></label>
+        <span class="switch"><input id="m-sound" type="checkbox" checked><span></span></span>
+      </div>
+      <div class="row">
+        <label for="m-overlay"><span class="label" data-i18n="mon.overlay">Landmark overlay</span><span class="sub" data-i18n="mon.overlay.sub">Face contour, eye and mouth points of each frame.</span></label>
+        <span class="switch"><input id="m-overlay" type="checkbox" checked><span></span></span>
+      </div>
+      <div class="row">
+        <label for="m-blur"><span class="label" data-i18n="mon.blur">Blur my face in the preview</span><span class="sub" data-i18n="mon.blur.sub">Monitoring works either way.</span></label>
+        <span class="switch"><input id="m-blur" type="checkbox" checked><span></span></span>
+      </div>
+    </div>
+    <p class="fineprint mon-disclaimer" data-i18n="mon.disclaimer">Shows cues from visible signals only. It does not detect sleep, emotions, medical conditions or fitness to drive.</p>
+  </section>
+
+  <aside class="panel" id="fx-panel" data-i18n-aria="panel.label" aria-label="Settings" hidden>
     <div class="seg" role="tablist" data-i18n-aria="mode.label" aria-label="Mode">
       <button type="button" role="tab" data-mode="privacy" aria-selected="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span data-i18n="mode.privacy">Privacy</span></button>
@@ -281,6 +395,79 @@
   </aside>
 </main>
 
+<!-- ============ SESSION HISTORY ============ -->
+<main id="view-history" class="page two-col" role="tabpanel" aria-labelledby="tab-history" hidden>
+  <section class="card">
+    <div class="row"><h2 data-i18n="hist.title">Sessions</h2><span class="meta" data-i18n="hist.memory">Kept in this tab only</span></div>
+    <ul class="hist-list" id="hist-list"></ul>
+    <p class="empty" id="hist-empty" data-i18n="hist.empty">No sessions yet. A session starts when the camera is on and ends when it stops.</p>
+  </section>
+  <section class="card" id="hist-detail" hidden>
+    <div class="row"><h2 data-i18n="hist.detail">Session details</h2><span class="tag" id="hist-running" hidden data-i18n="hist.running">Running</span></div>
+    <dl class="facts">
+      <div><dt data-i18n="hist.date">Date</dt><dd id="hist-date"></dd></div>
+      <div><dt data-i18n="hist.time">Time</dt><dd id="hist-time"></dd></div>
+      <div><dt data-i18n="hist.duration">Duration</dt><dd id="hist-duration"></dd></div>
+      <div><dt data-i18n="hist.cues">Cues</dt><dd id="hist-cues"></dd></div>
+    </dl>
+    <h3 data-i18n="hist.timeline">Event timeline</h3>
+    <canvas id="hist-timeline" class="timeline" width="720" height="56" data-i18n-aria="hist.timeline" aria-label="Event timeline"></canvas>
+    <div class="table-wrap">
+      <table class="events-table">
+        <thead><tr><th data-i18n="hist.col.time">Time</th><th data-i18n="hist.col.event">Event</th><th data-i18n="hist.col.details">Details</th></tr></thead>
+        <tbody id="hist-events"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- ============ SETTINGS ============ -->
+<main id="view-settings" class="page" role="tabpanel" aria-labelledby="tab-settings" hidden>
+  <section class="card setting">
+    <div class="row">
+      <label for="s-sound"><span class="label" data-i18n="set.sound">Sound alert</span><span class="sub" data-i18n="set.sound.sub">Play a sound when a cue is raised.</span></label>
+      <span class="switch"><input id="s-sound" type="checkbox" checked><span></span></span>
+    </div>
+  </section>
+  <section class="card setting">
+    <label for="s-duration"><span class="label" data-i18n="set.duration">Eye closure duration</span><span class="sub" data-i18n="set.duration.sub">How long the eyes must stay closed without a break before a cue is raised.</span></label>
+    <div class="row start"><input id="s-duration" class="num-input" type="number" min="1" max="5" step="0.5" value="2" inputmode="decimal"><span data-i18n="set.seconds">seconds</span></div>
+    <p class="fineprint" data-i18n="set.duration.fine">1–5 s in 0.5 s steps. Default 2 s — a starting point, not a validated threshold.</p>
+  </section>
+  <section class="card setting">
+    <div class="row top">
+      <span><span class="label" data-i18n="set.cal">Eye openness calibration</span><span class="sub" data-i18n="set.cal.sub">Look at the camera with your eyes open for 3 seconds. The monitor then judges closure relative to your own eyes, lighting and camera.</span></span>
+      <button type="button" class="btn accent-outline" id="s-calibrate" data-i18n="set.cal.cta">Calibrate eye openness</button>
+    </div>
+    <div class="row start"><p class="status-note" id="s-cal-status"></p><button type="button" class="btn small ghost" id="s-cal-reset" hidden data-i18n="set.cal.reset">Use default</button></div>
+  </section>
+  <section class="card setting">
+    <div class="row">
+      <span><span class="label" data-i18n="set.lang">Language</span><span class="sub" data-i18n="set.lang.sub">Select the interface language.</span></span>
+      <div class="lang" role="group" data-i18n-aria="lang.label" aria-label="Language">
+        <button type="button" data-lang="en" lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-lang="ko" lang="ko" aria-pressed="false">KO</button>
+      </div>
+    </div>
+  </section>
+  <section class="card setting">
+    <span class="label" data-i18n="set.privacy">Privacy</span>
+    <p class="sub" data-i18n="set.privacy.body">Camera frames are analysed in this browser and never uploaded. Only event times and short labels (for example “eyes closed”, “tracking lost”) are kept, in memory, for this tab. No video, images or audio are recorded or saved.</p>
+  </section>
+  <section class="card setting danger-zone">
+    <div class="row top">
+      <span><span class="label" data-i18n="set.clear">Clear session history</span><span class="sub" data-i18n="set.clear.sub">Remove all saved sessions and events from this tab.</span></span>
+      <button type="button" class="btn danger-soft" id="s-clear" data-i18n="set.clear.cta">Clear session history</button>
+    </div>
+    <div class="confirm-row" id="s-clear-confirm" hidden>
+      <span data-i18n="set.clear.ask">Delete all session history? This cannot be undone.</span>
+      <button type="button" class="btn danger-soft" id="s-clear-yes" data-i18n="set.clear.yes">Delete all</button>
+      <button type="button" class="btn ghost" id="s-clear-no" data-i18n="set.clear.no">Cancel</button>
+    </div>
+    <p class="status-note" id="s-clear-done" hidden data-i18n="set.clear.done">Session history cleared.</p>
+  </section>
+</main>
+
 <!-- ============ PHOTO UPLOAD (existing flow) ============ -->
 <main id="view-upload" class="upload-view" role="tabpanel" aria-labelledby="tab-upload" hidden>
   <input id="file" class="visually-hidden" type="file" accept="image/jpeg,image/png">
@@ -324,5 +511,7 @@
     <span><strong data-i18n="notice.strong">Automatic detection does not guarantee that every face is found.</strong> <span data-i18n="notice.upload">Review the result before downloading and add manual regions where needed.</span></span>
   </p>
 </main>
+</div>
+</div>
 </body>
 </html>
