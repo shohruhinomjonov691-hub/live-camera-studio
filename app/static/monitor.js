@@ -233,16 +233,10 @@
         emit();
         return snapshot();
       }
-      if (!Array.isArray(sample.marks)) {
-        resetClosure(at, "unavailable");
-        metrics = null;
-        status = sample.error ? "unavailable" : "waiting";
-        emit();
-        return snapshot();
-      }
+      // Status priority: no detected face, then a hidden preview, then landmark availability, then the landmarks.
       // The face detector decides whether there is a face: landmarks without a detected face are not tracking
       // (with blur on, that frame is hidden too).
-      if (sample.marks.length === 0 || sample.faces === 0) {
+      if (sample.faces === 0) {
         resetClosure(at, "noface");
         metrics = null;
         setStatus("noface", at);
@@ -254,6 +248,20 @@
         resetClosure(at, "previewHidden");
         metrics = null;
         setStatus("hidden", at);
+        emit();
+        return snapshot();
+      }
+      if (!Array.isArray(sample.marks)) {
+        resetClosure(at, "unavailable");
+        metrics = null;
+        status = sample.error ? "unavailable" : "waiting";
+        emit();
+        return snapshot();
+      }
+      if (sample.marks.length === 0) {
+        resetClosure(at, "noface");
+        metrics = null;
+        setStatus("noface", at);
         emit();
         return snapshot();
       }

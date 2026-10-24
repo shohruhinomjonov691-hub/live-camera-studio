@@ -300,3 +300,31 @@ test("[r-mon] a frame whose preview is hidden is not tracking and resets the tim
   assert.equal(s.alert, null);
   assert.equal(alerts.length, 0);
 });
+
+// ---------- Codex review (P3): status priority — noface, then hidden, then landmark availability ----------
+
+test("[r-p3] no detected face wins over missing landmarks (loading or failed)", () => {
+  for (const error of [null, "landmarker"]) {
+    const { m, alerts } = monitor({ alertAfterMs: 1000 });
+    feed(m, 0, 900, one({ ear: 0.1 }));
+    const s = m.update({ at: 950, faces: 0, marks: null, error });
+    assert.equal(s.status, "noface", `error=${error}`);
+    assert.equal(s.closedMs, 0);
+    assert.equal(s.alert, null);
+    assert.equal(alerts.length, 0);
+  }
+});
+
+test("[r-p3] a hidden preview wins over missing landmarks; availability is checked after both", () => {
+  const { m } = monitor({ alertAfterMs: 1000 });
+  feed(m, 0, 900, one({ ear: 0.1 }));
+  let s = m.update({ at: 950, faces: 1, marks: null, error: "landmarker", shown: false });
+  assert.equal(s.status, "hidden");
+  assert.equal(s.closedMs, 0);
+  s = m.update({ at: 1000, faces: 1, marks: null, error: "landmarker", shown: true });
+  assert.equal(s.status, "unavailable");
+  s = m.update({ at: 1050, faces: 1, marks: null, error: null, shown: true });
+  assert.equal(s.status, "waiting");
+  s = m.update({ at: 1100, faces: 0, marks: null, error: null, shown: false });
+  assert.equal(s.status, "noface", "no face wins over a hidden preview");
+});
