@@ -1570,3 +1570,145 @@ test("[fresh] an error state is not turned into hidden by the watchdog", async (
   watchdog.fn();
   assert.equal(h.state(), "error");
 });
+
+// ---------- Alertness monitor: landmarks of the same frame, overlay, no effect on privacy ----------
+
+const MARKS = [[1, 2, 3, 4]];
+
+async function liveWithMonitor(h, { ready = true } = {}) {
+  h.camera.setSettings({ monitor: true });
+  await goLive(h);
+  assert.ok(h.worker.posted.some((m) => m.type === "init-landmarker"), "the monitor loads the landmarker");
+  if (ready) h.worker.reply({ type: "landmarker-ready", initMs: 1 });
+}
+
+test("[mon] the monitor gets the landmarks of the very frame that was processed, with its capture time", async () => {
+  const h = setup();
+  const samples = [];
+  const drawn = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  h.env.drawLandmarks = (ctx, marks) => drawn.push(marks);
+  await liveWithMonitor(h);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  assert.equal(msg.landmarks, true, "landmarks requested for this frame");
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: MARKS, landmarksError: null });
+  assert.equal(h.state(), "live");
+  assert.equal(samples.length, 1);
+  assert.deepEqual(plain(samples[0]), { at: samples[0].at, faces: 1, marks: MARKS, error: null });
+  assert.ok(samples[0].at > 0);
+  assert.deepEqual(plain(drawn), [MARKS], "overlay drawn from the same frame");
+  assert.equal(h.camera.settings.blurOn, true, "the monitor never turns face blur off");
+});
+
+test("[mon] a late result of an older frame reaches neither the monitor nor the overlay", async () => {
+  const h = setup();
+  const samples = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  await liveWithMonitor(h);
+  await h.runFrame();
+  const stale = h.lastDetect();
+  h.fireTimers(1000); // deadline: this frame is dropped
+  h.worker.reply({ type: "result", session: stale.session, frameId: stale.frameId, faces: FACE, marks: MARKS });
+  assert.equal(samples.length, 0);
+});
+
+test("[mon] with blur on and no face the frame stays hidden, but the monitor still learns there is no face", async () => {
+  const h = setup();
+  const samples = [];
+  const drawn = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  h.env.drawLandmarks = (ctx, marks) => drawn.push(marks);
+  await liveWithMonitor(h);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: [], marks: [], landmarksError: null });
+  assert.equal(h.state(), "hidden");
+  assert.deepEqual(plain(samples.at(-1).marks), []);
+  assert.equal(drawn.length, 0, "nothing drawn over a hidden frame");
+});
+
+test("[mon] the overlay can be turned off; the analysis continues", async () => {
+  const h = setup();
+  const samples = [];
+  const drawn = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  h.env.drawLandmarks = (ctx, marks) => drawn.push(marks);
+  await liveWithMonitor(h);
+  h.camera.setSettings({ showLandmarks: false });
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: MARKS });
+  assert.equal(drawn.length, 0);
+  assert.equal(samples.length, 1);
+});
+
+test("[mon] while the landmarker loads or after it fails, the monitor is told so (no invented landmarks)", async () => {
+  const h = setup();
+  const samples = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  await liveWithMonitor(h, { ready: false });
+  await h.runFrame();
+  let msg = h.lastDetect();
+  assert.equal(msg.landmarks, false);
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE });
+  assert.deepEqual(plain(samples.at(-1)), { at: samples.at(-1).at, faces: 1, marks: null, error: null });
+
+  h.worker.reply({ type: "landmarker-ready", initMs: 1 });
+  await h.runFrame();
+  msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: null, landmarksError: "boom" });
+  assert.equal(samples.at(-1).marks, null);
+  assert.equal(samples.at(-1).error, "boom");
+  assert.equal(h.camera.effect, "error");
+  assert.equal(h.camera.settings.blurOn, true, "blur untouched");
+  await h.runFrame();
+  msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE });
+  assert.equal(samples.at(-1).error, "landmarker");
+  h.camera.retryLandmarks();
+  assert.equal(h.worker.posted.filter((m) => m.type === "init-landmarker").length, 2, "Retry asks again");
+});
+
+test("[mon] a failing monitor callback or overlay never stops the camera pipeline", async () => {
+  const h = setup();
+  h.env.onAnalysis = () => {
+    throw new Error("ui bug");
+  };
+  h.env.drawLandmarks = () => {
+    throw new Error("draw bug");
+  };
+  const errors = console.error;
+  console.error = () => {};
+  try {
+    await liveWithMonitor(h);
+    await h.runFrame();
+    const msg = h.lastDetect();
+    h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: MARKS });
+  } finally {
+    console.error = errors;
+  }
+  assert.equal(h.state(), "live");
+  assert.ok(h.pendingFrames() >= 1, "the next frame is requested");
+  assert.ok(viewDraws(h.env.view).length > 0, "the processed frame is shown");
+});
+
+test("[mon] the monitor off: no landmarks requested, no analysis", async () => {
+  const h = setup();
+  const samples = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  await goLive(h);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  assert.equal(msg.landmarks, false);
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE });
+  assert.equal(samples.length, 0);
+  assert.ok(!h.worker.posted.some((m) => m.type === "init-landmarker"));
+});
+
+test("[mon] a disconnected camera stops with reason \"ended\" before the ended state", async () => {
+  const h = setup();
+  const stream = await goLive(h);
+  stream.track.emit("ended");
+  assert.deepEqual(plain(h.states.slice(-2)), [["idle", { reason: "ended" }], ["ended", null]]);
+});

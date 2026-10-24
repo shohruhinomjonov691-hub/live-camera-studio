@@ -10,7 +10,8 @@
 //      {type: "landmarker-ready", initMs} | {type: "landmarker-error", message}
 //      {type: "segmenter-ready", initMs} | {type: "segmenter-error", message}
 //      {type: "result", session, frameId, faces: [{x, y, w, h, score}], inferMs,
-//       eyes: [{rOuter, rInner, lInner, lOuter}] | null, landmarksError: string | null,
+//       eyes: [{rOuter, rInner, lInner, lOuter}] | null, marks: [[x0, y0, x1, y1, ...]] | null,
+//       landmarksError: string | null,
 //       mask: {width, height, alpha: Uint8ClampedArray (transferred)} | null, maskError: string | null}
 //      {type: "error", stage: "init" | "detect", session?, frameId?, message, name}
 //      name: the error's class name only (e.g. "ReferenceError"), shown in the UI as a diagnostic code
@@ -31,6 +32,15 @@ const MIN_CONFIDENCE = 0.4;
 const MAX_FACES_WITH_GLASSES = 4;
 // Face mesh indices of the eye corners (image coordinates, not mirrored).
 const EYE_POINTS = { rOuter: 33, rInner: 133, lInner: 362, lOuter: 263 };
+// Points for the alertness monitor (eyes, mouth, head, face oval), in the order of MONITOR_LANDMARKS in
+// app/static/monitor.js (a test checks they match). Sent per face as a flat [x0, y0, x1, y1, ...] array.
+const MONITOR_POINTS = [
+  33, 160, 158, 133, 153, 144, 362, 385, 387, 263, 373, 380, 13, 14, 78, 308,
+  61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146,
+  1, 152, 234, 454, 10,
+  10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150,
+  136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+];
 
 let fileset = null;
 let detector = null;
@@ -155,6 +165,17 @@ function maskFrom(bitmap, timestamp) {
   return mask;
 }
 
+function marksFrom(result, width, height) {
+  return result.faceLandmarks.map((points) => {
+    const flat = new Array(MONITOR_POINTS.length * 2);
+    MONITOR_POINTS.forEach((index, i) => {
+      flat[i * 2] = points[index].x * width;
+      flat[i * 2 + 1] = points[index].y * height;
+    });
+    return flat;
+  });
+}
+
 function eyesFrom(result, width, height) {
   return result.faceLandmarks.map((points) => {
     const eye = {};
@@ -182,13 +203,16 @@ function detect({ session, frameId, bitmap, timestamp, landmarks, segment }) {
       }));
 
     let eyes = null;
+    let marks = null;
     let landmarksError = null;
     if (landmarks) {
       if (!landmarker) {
         landmarksError = "not ready";
       } else {
         try {
-          eyes = eyesFrom(landmarker.detectForVideo(bitmap, lastTimestamp), bitmap.width, bitmap.height);
+          const found = landmarker.detectForVideo(bitmap, lastTimestamp);
+          eyes = eyesFrom(found, bitmap.width, bitmap.height);
+          marks = marksFrom(found, bitmap.width, bitmap.height);
         } catch (error) {
           landmarksError = String(error?.message || error);
         }
@@ -209,7 +233,7 @@ function detect({ session, frameId, bitmap, timestamp, landmarks, segment }) {
     }
     const inferMs = performance.now() - started;
     self.postMessage(
-      { type: "result", session, frameId, faces, inferMs, eyes, landmarksError, mask, maskError },
+      { type: "result", session, frameId, faces, inferMs, eyes, marks, landmarksError, mask, maskError },
       mask ? [mask.alpha.buffer] : [],
     );
   } catch (error) {

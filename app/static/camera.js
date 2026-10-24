@@ -18,6 +18,8 @@
 // - Background effects use the person mask of that same frame. Layers: background (blurred frame or the
 //   user's image) -> foreground (frame cut out by the mask) -> glasses or face blur. With a background on,
 //   a frame without a valid mask is never shown (the real background must not reappear unannounced).
+// - The alertness monitor (monitor.js) gets the landmarks of the very frame that was just processed
+//   (env.onAnalysis) and its overlay is drawn from that same frame; it never changes what is blurred or hidden.
 //
 // The controller takes its browser dependencies as `env`, so tests can drive it with fakes.
 (function (global) {
@@ -201,6 +203,7 @@
       blurOn: true, method: "pixel", strength: 3, showBoxes: true, facingMode: "user",
       glasses: false, glassesSize: 100,
       background: "off", bgBlur: 2, mirror: true,
+      monitor: false, showLandmarks: true,
     };
     // Selfie segmenter for background effects: "off" | "loading" | "ready" | "error".
     let segmenter = "off";
@@ -289,7 +292,7 @@
       created.onmessage = (event) => worker === created && onWorkerMessage(event.data);
       created.onerror = (event) => worker === created && onWorkerFailure(event && event.message);
       created.postMessage({ type: "init" });
-      if (settings.glasses) requestLandmarker();
+      if (settings.glasses || settings.monitor) requestLandmarker();
       if (settings.background !== "off") requestSegmenter();
       return workerReady;
     }
@@ -450,7 +453,7 @@
 
     function onTrackEnded(id) {
       if (id !== camSession) return;
-      stop();
+      stop("ended"); // the reason lets listeners tell a disconnected camera from Stop
       setState("ended");
     }
 
@@ -522,7 +525,8 @@
       // The deadline runs from the start of capture, so a stuck createImageBitmap also hides the preview.
       const current = {
         id: ++frameId, session: camSession, frame: null, copy: null, capturedAt: env.now(), timer: null,
-        landmarks: settings.glasses && landmarker === "ready",
+        landmarks: (settings.glasses || settings.monitor) && landmarker === "ready",
+        monitor: settings.monitor,
         segment: settings.background !== "off" && segmenter === "ready",
       };
       job = current;
@@ -582,6 +586,9 @@
       if (current.landmarks && msg.landmarksError) effectFailed(msg.landmarksError, { midCompose: true });
       // Landmarks of this very frame, only if the effect is still on.
       const eyes = current.landmarks && settings.glasses && Array.isArray(msg.eyes) ? msg.eyes : [];
+      // Monitor points of this very frame (null when the landmarker was not asked or failed).
+      const marks = current.landmarks && Array.isArray(msg.marks) && !msg.landmarksError ? msg.marks : null;
+      const overlayMarks = settings.monitor && settings.showLandmarks ? marks : null;
       try {
         // A runtime segmentation failure for this very frame (session and frameId already matched above):
         // the segmenter is now in error; the frame is hidden below and Retry recreates the segmenter.
@@ -593,7 +600,7 @@
           setState("hidden", { why: "noface" });
         } else if (settings.background !== "off" && !mask) {
           hideForBackground();
-        } else if (compose(current.frame, faces, eyes, mask)) {
+        } else if (compose(current.frame, faces, eyes, mask, overlayMarks)) {
           setState("live", { faces: faces.length, blurOn: settings.blurOn });
           armFreshness();
         } else {
@@ -606,12 +613,24 @@
       } finally {
         current.frame.close();
       }
+      if (current.monitor && settings.monitor) analyse(current, faces, marks, msg.landmarksError);
       record(msg.inferMs, env.now() - current.capturedAt);
       schedule();
     }
 
+    /** Hand this frame's monitor input to the page. A failure there must never stop the camera pipeline. */
+    function analyse(current, faces, marks, landmarksError) {
+      if (!env.onAnalysis) return;
+      const error = landmarksError || (current.landmarks ? null : landmarker === "error" ? "landmarker" : null);
+      try {
+        env.onAnalysis({ at: current.capturedAt, faces: faces.length, marks, error: error ? String(error) : null });
+      } catch (err) {
+        if (global.console) global.console.error(err);
+      }
+    }
+
     /** Draw one processed frame. Returns false (and leaves every canvas cleared) if it must not be shown. */
-    function compose(frame, faces, eyes = [], mask = null) {
+    function compose(frame, faces, eyes = [], mask = null, marks = null) {
       const width = frame.width;
       const height = frame.height;
       for (const canvas of [buffer, env.view, env.overlay]) {
@@ -655,6 +674,14 @@
         octx.lineWidth = Math.max(2, Math.round(width / 400));
         octx.strokeStyle = "#3ccf8e";
         boxes.forEach((box) => octx.strokeRect(box.x, box.y, box.w, box.h));
+      }
+      if (marks && marks.length && env.drawLandmarks) {
+        // Only an overlay: a drawing problem clears it but never costs the frame or the blur under it.
+        try {
+          env.drawLandmarks(octx, marks, width);
+        } catch (_) {
+          octx.clearRect(0, 0, width, height);
+        }
       }
       perf.frameSize = { w: width, h: height };
       viewReady = true;
@@ -817,8 +844,8 @@
         const blurTurnedOn = next.blurOn && !settings.blurOn;
         const modeChanged = next.blurOn !== settings.blurOn || next.glasses !== settings.glasses;
         Object.assign(settings, next);
-        // Turning the effect on (again) loads the landmarker, or retries it after an error.
-        if (partial.glasses === true && landmarker !== "ready") requestLandmarker();
+        // Turning the effect or the monitor on (again) loads the landmarker, or retries it after an error.
+        if ((partial.glasses === true || partial.monitor === true) && landmarker !== "ready") requestLandmarker();
         if (modeChanged) {
           // A frame captured under the old mode must not be drawn under the new one.
           dropJob();
@@ -846,6 +873,10 @@
       snapshot,
       canSnapshot,
       setBackgroundImage,
+      /** Retry loading the landmarker after an error (monitor or glasses). */
+      retryLandmarks() {
+        if (landmarker === "error" || landmarker === "off") requestLandmarker();
+      },
       /** Retry loading the segmenter after an error. */
       retryBackground() {
         if (segmenter === "error") requestSegmenter({ recreate: true });
