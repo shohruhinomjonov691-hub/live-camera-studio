@@ -220,7 +220,7 @@
 
     /**
      * One processed frame. sample: {at, faces (detector count), marks: array of flat landmark arrays (one per
-     * face) | null when landmarks are not available, error: string|null}
+     * face) | null when landmarks are not available, error: string|null, shown: false if the preview hid this frame}
      */
     function update(sample) {
       if (!session) startSession(sample.at);
@@ -240,10 +240,20 @@
         emit();
         return snapshot();
       }
-      if (sample.marks.length === 0) {
+      // The face detector decides whether there is a face: landmarks without a detected face are not tracking
+      // (with blur on, that frame is hidden too).
+      if (sample.marks.length === 0 || sample.faces === 0) {
         resetClosure(at, "noface");
         metrics = null;
         setStatus("noface", at);
+        emit();
+        return snapshot();
+      }
+      if (sample.shown === false) {
+        // The preview hid this frame (e.g. no valid background mask): it is not counted as normal tracking.
+        resetClosure(at, "previewHidden");
+        metrics = null;
+        setStatus("hidden", at);
         emit();
         return snapshot();
       }

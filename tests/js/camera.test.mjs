@@ -1595,7 +1595,7 @@ test("[mon] the monitor gets the landmarks of the very frame that was processed,
   h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: MARKS, landmarksError: null });
   assert.equal(h.state(), "live");
   assert.equal(samples.length, 1);
-  assert.deepEqual(plain(samples[0]), { at: samples[0].at, faces: 1, marks: MARKS, error: null });
+  assert.deepEqual(plain(samples[0]), { at: samples[0].at, faces: 1, marks: MARKS, error: null, shown: true });
   assert.ok(samples[0].at > 0);
   assert.deepEqual(plain(drawn), [MARKS], "overlay drawn from the same frame");
   assert.equal(h.camera.settings.blurOn, true, "the monitor never turns face blur off");
@@ -1652,7 +1652,7 @@ test("[mon] while the landmarker loads or after it fails, the monitor is told so
   let msg = h.lastDetect();
   assert.equal(msg.landmarks, false);
   h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE });
-  assert.deepEqual(plain(samples.at(-1)), { at: samples.at(-1).at, faces: 1, marks: null, error: null });
+  assert.deepEqual(plain(samples.at(-1)), { at: samples.at(-1).at, faces: 1, marks: null, error: null, shown: true });
 
   h.worker.reply({ type: "landmarker-ready", initMs: 1 });
   await h.runFrame();
@@ -1711,4 +1711,67 @@ test("[mon] a disconnected camera stops with reason \"ended\" before the ended s
   const stream = await goLive(h);
   stream.track.emit("ended");
   assert.deepEqual(plain(h.states.slice(-2)), [["idle", { reason: "ended" }], ["ended", null]]);
+});
+
+// ---------- Codex review: hidden frames and landmarker Retry ----------
+
+test("[r-mon] the monitor is told whether the frame was shown (hidden with no face, shown when live)", async () => {
+  const h = setup();
+  const samples = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  await liveWithMonitor(h);
+  await h.runFrame();
+  let msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: [], marks: MARKS });
+  assert.equal(h.state(), "hidden");
+  assert.equal(samples.at(-1).faces, 0);
+  assert.equal(samples.at(-1).shown, false);
+  await h.runFrame();
+  msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: MARKS });
+  assert.equal(h.state(), "live");
+  assert.equal(samples.at(-1).shown, true);
+});
+
+test("[r-mon] Retry after a runtime landmarker error asks the worker to recreate it; late errors of older frames are ignored", async () => {
+  const h = setup();
+  const samples = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  await liveWithMonitor(h);
+  await h.runFrame();
+  let msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: null, landmarksError: "boom" });
+  assert.equal(h.camera.effect, "error");
+
+  h.camera.retryLandmarks();
+  const init = h.worker.posted.filter((m) => m.type === "init-landmarker").at(-1);
+  assert.equal(init.recreate, true, "the broken instance must be rebuilt, not reused");
+  assert.equal(h.camera.effect, "loading");
+  h.worker.reply({ type: "landmarker-ready", initMs: 1 });
+
+  // A frame captured with the old (broken) instance and answered late must not undo the retry.
+  await h.runFrame();
+  const fresh = h.lastDetect();
+  assert.equal(fresh.landmarks, true);
+  h.worker.reply({ type: "result", session: fresh.session, frameId: fresh.frameId, faces: FACE, marks: MARKS, landmarksError: null });
+  assert.equal(h.camera.effect, "ready");
+  assert.deepEqual(plain(samples.at(-1).marks), MARKS, "the next frame succeeds");
+});
+
+test("[r-mon] a landmarker error from a frame captured before Retry does not mark the new instance as failed", async () => {
+  const h = setup();
+  await liveWithMonitor(h);
+  await h.runFrame();
+  const before = h.lastDetect(); // in flight with the old instance
+  h.camera.retryLandmarks(); // not in error: nothing to do
+  h.worker.reply({ type: "result", session: before.session, frameId: before.frameId, faces: FACE, marks: null, landmarksError: "boom" });
+  assert.equal(h.camera.effect, "error");
+  await h.runFrame();
+  const stale = h.lastDetect(); // landmarks not requested while in error
+  assert.equal(stale.landmarks, false);
+  h.camera.retryLandmarks();
+  assert.equal(h.camera.effect, "loading");
+  // The result of the frame captured before Retry arrives with an error after Retry: ignored for the state.
+  h.worker.reply({ type: "result", session: stale.session, frameId: stale.frameId, faces: FACE, landmarksError: "late boom" });
+  assert.equal(h.camera.effect, "loading", "a late error of an older frame does not undo the retry");
 });

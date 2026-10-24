@@ -278,3 +278,25 @@ test("a ratio between the thresholds counts as open at the start (not unknown fo
   assert.equal(s.eyes, "open");
   assert.equal(s.closedMs, 0);
 });
+
+// ---------- Codex review: a frame without a detected face (or a hidden preview) is never tracking ----------
+
+test("[r-mon] detector found no face but landmarks exist: no tracking, no timer, no cue", () => {
+  const { m, alerts } = monitor({ alertAfterMs: 1000 });
+  feed(m, 0, 200, one({ ear: 0.3 }));
+  const s = feed(m, 250, 3000, () => ({ faces: 0, marks: [face({ ear: 0.1 })], error: null }));
+  assert.equal(s.status, "noface");
+  assert.equal(s.closedMs, 0);
+  assert.equal(s.alert, null);
+  assert.equal(alerts.length, 0);
+});
+
+test("[r-mon] a frame whose preview is hidden is not tracking and resets the timer", () => {
+  const { m, alerts } = monitor({ alertAfterMs: 1000 });
+  feed(m, 0, 800, one({ ear: 0.1 }));
+  const s = feed(m, 850, 3000, () => ({ faces: 1, marks: [face({ ear: 0.1 })], error: null, shown: false }));
+  assert.notEqual(s.status, "tracking");
+  assert.equal(s.closedMs, 0);
+  assert.equal(s.alert, null);
+  assert.equal(alerts.length, 0);
+});

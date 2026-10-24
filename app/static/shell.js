@@ -578,6 +578,7 @@
     invalid: ["mon.st.invalid", "mon.st.invalid.sub", "warn"],
     turned: ["mon.st.turned", "mon.st.turned.sub", "warn"],
     paused: ["mon.st.paused", "mon.st.paused.sub", "wait"],
+    hidden: ["mon.st.hidden", "mon.st.hidden.sub", "warn"],
     unavailable: ["mon.st.unavailable", "mon.st.unavailable.sub", "danger"],
   };
 

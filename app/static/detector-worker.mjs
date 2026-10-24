@@ -2,7 +2,8 @@
 // Frames arrive as transferred ImageBitmaps and never leave the browser.
 //
 // in:  {type: "init"}                       load the face detector (needed for blur)
-//      {type: "init-landmarker"}            load the face landmarker (only for the glasses effect)
+//      {type: "init-landmarker", recreate?} load the face landmarker (glasses effect, alertness monitor);
+//                                           recreate: close the current instance first (Retry after an error)
 //      {type: "init-segmenter", recreate?}  load the selfie segmenter (only for background effects);
 //                                           recreate: close the current instance first (Retry after an error)
 //      {type: "detect", session, frameId, bitmap, timestamp, landmarks: bool, segment: bool}
@@ -255,6 +256,16 @@ self.onmessage = async (event) => {
       self.postMessage({ type: "error", stage: "init", message: String(error?.message || error), name: errorName(error) });
     }
   } else if (msg.type === "init-landmarker") {
+    if (msg.recreate && landmarker) {
+      // Retry after a runtime failure: release the broken instance; detections meanwhile report "not ready".
+      const broken = landmarker;
+      landmarker = null;
+      try {
+        broken.close();
+      } catch (_) {
+        /* already unusable */
+      }
+    }
     try {
       const initMs = landmarker ? 0 : await initLandmarker();
       self.postMessage({ type: "landmarker-ready", initMs });

@@ -262,6 +262,8 @@ window.LCS_I18N.en = {
   "mon.st.invalid.sub": "The landmarks of this frame could not be measured. Move closer or improve the lighting.",
   "mon.st.turned": "Face turned or tilted",
   "mon.st.turned.sub": "Eyes are judged only while you face the camera.",
+  "mon.st.hidden": "Preview hidden",
+  "mon.st.hidden.sub": "Monitoring waits until the preview shows the camera again.",
   "mon.st.paused": "Session paused",
   "mon.st.paused.sub": "No cues while paused. The camera is still on.",
   "mon.st.unavailable": "Landmarks unavailable",
@@ -350,6 +352,7 @@ window.LCS_I18N.en = {
   "ev.reason.paused": "Session paused",
   "ev.reason.unavailable": "Landmarks unavailable",
   "ev.reason.calibrated": "Recalibrated",
+  "ev.reason.previewHidden": "Preview hidden",
   "ev.reason.stale": "No new frames",
   "ev.reason.timeout": "Detection too slow"
 };

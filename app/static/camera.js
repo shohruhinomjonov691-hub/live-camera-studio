@@ -343,8 +343,10 @@
     /** Load the landmarker in the worker (once). Without a worker it is requested when one is created. */
     function requestLandmarker() {
       if (!worker || landmarker === "loading" || landmarker === "ready") return;
+      // After an error (load or runtime) the worker must drop the broken instance and build a new one.
+      const recreate = landmarker === "error";
       setLandmarker("loading");
-      worker.postMessage({ type: "init-landmarker" });
+      worker.postMessage({ type: "init-landmarker", recreate });
     }
 
     function resetWorker() {
@@ -589,6 +591,7 @@
       // Monitor points of this very frame (null when the landmarker was not asked or failed).
       const marks = current.landmarks && Array.isArray(msg.marks) && !msg.landmarksError ? msg.marks : null;
       const overlayMarks = settings.monitor && settings.showLandmarks ? marks : null;
+      let shown = false; // whether this frame reached the screen
       try {
         // A runtime segmentation failure for this very frame (session and frameId already matched above):
         // the segmenter is now in error; the frame is hidden below and Retry recreates the segmenter.
@@ -603,6 +606,7 @@
         } else if (compose(current.frame, faces, eyes, mask, overlayMarks)) {
           setState("live", { faces: faces.length, blurOn: settings.blurOn });
           armFreshness();
+          shown = true;
         } else {
           // An effect failure inside compose turned blur back on and there is no face to blur.
           setState("hidden", { why: "noface" });
@@ -613,17 +617,17 @@
       } finally {
         current.frame.close();
       }
-      if (current.monitor && settings.monitor) analyse(current, faces, marks, msg.landmarksError);
+      if (current.monitor && settings.monitor) analyse(current, faces, marks, msg.landmarksError, shown);
       record(msg.inferMs, env.now() - current.capturedAt);
       schedule();
     }
 
     /** Hand this frame's monitor input to the page. A failure there must never stop the camera pipeline. */
-    function analyse(current, faces, marks, landmarksError) {
+    function analyse(current, faces, marks, landmarksError, shown) {
       if (!env.onAnalysis) return;
       const error = landmarksError || (current.landmarks ? null : landmarker === "error" ? "landmarker" : null);
       try {
-        env.onAnalysis({ at: current.capturedAt, faces: faces.length, marks, error: error ? String(error) : null });
+        env.onAnalysis({ at: current.capturedAt, faces: faces.length, marks, error: error ? String(error) : null, shown });
       } catch (err) {
         if (global.console) global.console.error(err);
       }

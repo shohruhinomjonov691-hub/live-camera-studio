@@ -9,7 +9,7 @@ import vm from "node:vm";
 const SOURCE = readFileSync(new URL("../../app/static/detector-worker.mjs", import.meta.url), "utf8");
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function loadWorker({ failLandmarker = false, maskValues = null, offscreen = true, iosChromeUA = false } = {}) {
+function loadWorker({ failLandmarker = false, maskValues = null, offscreen = true, iosChromeUA = false, brokenLandmarkers = 0 } = {}) {
   const posted = [];
   const created = [];
   const options = [];
@@ -41,12 +41,15 @@ function loadWorker({ failLandmarker = false, maskValues = null, offscreen = tru
       context.ModuleFactory = undefined;
       await tick();
       created.push(kind);
+      // The first `brokenLandmarkers` landmarker instances fail at runtime, like a permanently broken instance.
+      const broken = kind === "landmarker" && created.filter((k) => k === "landmarker").length <= brokenLandmarkers;
       return {
         close() {
           closed.push(kind);
         },
         detectForVideo() {
           if (kind === "segmenter") throw new Error("segmenter has no detectForVideo");
+          if (broken) throw new Error("landmarker runtime failure");
           if (kind === "detector") {
             return { detections: [{ boundingBox: { originX: 1, originY: 2, width: 30, height: 40 }, categories: [{ score: 0.9 }] }] };
           }
@@ -221,4 +224,28 @@ test("[ios] without OffscreenCanvas nothing is passed (MediaPipe decides) and a 
   const error = w.posted.find((m) => m.type === "error");
   assert.equal(error.stage, "init");
   assert.equal(error.name, "ReferenceError");
+});
+
+// ---------- Codex review: Retry after a runtime landmarker failure must rebuild the instance ----------
+
+test("[r-mon] Retry (recreate) closes a runtime-broken landmarker, builds a new one, and the next frame succeeds", async () => {
+  const w = loadWorker({ brokenLandmarkers: 1 });
+  w.send({ type: "init" });
+  w.send({ type: "init-landmarker" });
+  await settle();
+  const bitmap = () => ({ width: 1000, height: 800, close() {} });
+  w.send({ type: "detect", session: 1, frameId: 1, bitmap: bitmap(), timestamp: 10, landmarks: true });
+  let result = w.posted.filter((m) => m.type === "result").at(-1);
+  assert.equal(result.landmarksError, "landmarker runtime failure");
+
+  w.send({ type: "init-landmarker", recreate: true });
+  await settle();
+  assert.deepEqual(w.closed, ["landmarker"], "the broken instance was closed");
+  assert.equal(w.created.filter((k) => k === "landmarker").length, 2, "a new instance was created");
+  assert.equal(w.posted.filter((m) => m.type === "landmarker-ready").length, 2);
+
+  w.send({ type: "detect", session: 1, frameId: 2, bitmap: bitmap(), timestamp: 20, landmarks: true });
+  result = w.posted.filter((m) => m.type === "result").at(-1);
+  assert.equal(result.landmarksError, null, "the next frame succeeds with the new instance");
+  assert.equal(result.marks.length, 1);
 });

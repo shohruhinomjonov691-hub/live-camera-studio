@@ -262,6 +262,8 @@ window.LCS_I18N.ko = {
   "mon.st.invalid.sub": "이 프레임의 랜드마크를 측정할 수 없습니다. 더 가까이 오거나 조명을 밝게 하세요.",
   "mon.st.turned": "얼굴이 돌아감",
   "mon.st.turned.sub": "카메라를 정면으로 볼 때만 눈 상태를 판단합니다.",
+  "mon.st.hidden": "미리보기 숨김",
+  "mon.st.hidden.sub": "미리보기에 카메라가 다시 표시될 때까지 모니터링을 기다립니다.",
   "mon.st.paused": "세션 일시정지",
   "mon.st.paused.sub": "일시정지 중에는 알림이 없습니다. 카메라는 켜져 있습니다.",
   "mon.st.unavailable": "랜드마크 사용 불가",
@@ -350,6 +352,7 @@ window.LCS_I18N.ko = {
   "ev.reason.paused": "세션 일시정지",
   "ev.reason.unavailable": "랜드마크 사용 불가",
   "ev.reason.calibrated": "다시 보정함",
+  "ev.reason.previewHidden": "미리보기 숨김",
   "ev.reason.stale": "새 프레임 없음",
   "ev.reason.timeout": "감지가 너무 느림"
 };
