@@ -1,10 +1,12 @@
 # Live Camera Studio
 
-A small web app that blurs faces — live from the camera, or in an uploaded photo. Live frames are processed entirely in the browser; uploaded photos are processed in server memory and never stored.
+A small web app for the camera: a **Live Monitor** that shows visible alertness signals (eye and mouth openness, head direction) and raises a *possible drowsiness cue* after a configurable eye-closure duration, plus live **face blur**, glasses and background effects, and the original photo-upload face blur. Live frames are processed entirely in the browser; uploaded photos are processed in server memory and never stored.
+
+> **The Live Monitor is not a sleep, medical or driver-safety detector.** It reports geometric signals of the face landmarks in each camera frame and a cue after a configurable duration; the thresholds are heuristics that have not been validated.
 
 **Live demo: https://camera.gotrips.cloud**
 
-**Status:** the MVP feature set below is complete and deployed. Face-detection quality has not been formally evaluated yet, and browser coverage is limited to the smoke tests listed under [Testing status](#testing-status).
+**Status:** the face-blur MVP is complete and deployed. The Live Monitor was added after it; what has and has not been verified for it is listed under [Testing status](#testing-status). Detection quality has not been formally evaluated, and browser coverage is limited to the smoke tests listed there.
 
 > **Automatic detection does not guarantee that every face is found.** Review the preview before you download anything, and add manual regions to uploaded photos where needed. The UI shows this warning permanently.
 
@@ -12,7 +14,18 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 
 ## Features
 
-**Live camera** (in the browser)
+**Live Monitor** (in the browser)
+
+- Start screen with the steps and a positioning guide; clear states for permission prompt, blocked permission, no/busy camera, a disconnected camera and an insecure page (shared with the camera below).
+- Landmark overlay (can be turned off): face contour, eye, mouth and nose points of the very frame on screen, drawn from MediaPipe Face Landmarker (478-point mesh; 77 points are used).
+- Visible signals from those landmarks: eyes open/closed (eye aspect ratio with hysteresis), mouth open/closed (inner-lip gap / mouth width), head facing the camera / turned / tilted (nose position between the cheeks and between eye line and chin).
+- Continuous eye-closure timer and a *possible drowsiness cue* after a configurable duration (1–5 s, default 2 s), with an optional sound (Web Audio beep) and a banner in every view. The cue says it is based on visible signals and is not a diagnosis.
+- The timer counts only while exactly one face is tracked, roughly facing the camera, in consecutive frames. No face, several faces, an unusable landmark result, a turned or tilted head, a gap of more than 1 s between frames, a stale/timed-out preview, Pause, Stop, a hidden page, a disconnected camera and a detector error all reset it and end an active cue.
+- Eye-openness chart of the last 30 s (only real samples of a tracked face; gaps stay gaps), relative to a baseline. Optional 3-second calibration of the open-eye baseline in Settings.
+- Session history in memory for this tab: start/stop, cues, eyes reopened, tracking lost/resumed, several faces, pause/resume, calibration — with a timeline. Clearing asks for confirmation. Nothing is stored on the server or in the browser's storage (only the sound and duration settings are remembered).
+- The monitor never changes the privacy rules below: face blur stays on by default (landmarks are drawn over the blurred face) and can be turned off from the monitor panel.
+
+**Effects** (the live camera features of the first release, in the browser)
 
 - Camera on/off, mirror, front/back switch (shown when the device has more than one camera).
 - Real-time face blur: pixelate + Gaussian, Gaussian, or a solid block, in three strengths; optional face boxes on the preview.
@@ -42,7 +55,7 @@ The UI is in English by default, with a Korean language switcher; the choice is 
 | Flow | Detector | Where it runs |
 | --- | --- | --- |
 | Live camera | MediaPipe Face Detector (BlazeFace short range), `@mediapipe/tasks-vision` 1.0.1 | Browser, in a module Web Worker |
-| Glasses effect | MediaPipe Face Landmarker (loaded only when the effect is turned on) | Same worker, same frame as the detector |
+| Live Monitor, glasses effect | MediaPipe Face Landmarker (`face_landmarker.task`, already vendored; loaded with the camera for the monitor) | Same worker, same frame as the detector |
 | Background | MediaPipe Image Segmenter, selfie model (loaded only when a background is turned on) | Same worker, same frame |
 | Photo upload | OpenCV frontal-face Haar cascade (reused from `cv_opencv.ipynb` in [computer_vision](https://github.com/shohruhinomjonov691-hub/computer_vision)) | Server, in memory |
 
@@ -61,6 +74,12 @@ Live camera:
 - Glasses use landmarks computed on the same captured frame as the face boxes. Changing blur or glasses drops the frame in flight, so a result from the old mode never reaches the screen. If the landmarker fails to load or errors, or drawing the glasses fails, the app fails closed: glasses turn off and face blur turns back on (the frame being drawn is blurred; otherwise the canvas is wiped at once).
 - With a background on, a frame is shown only with a valid person mask of that same frame. While the segmenter loads, after it fails, or when a mask is missing or malformed, the preview is hidden (with a message and Retry) — the real background never reappears unannounced. Turning the background off recovers. Changing any background setting drops the frame in flight and keeps the preview covered (and snapshots blocked) until a frame processed with the new settings arrives. The background image is released on Remove and when the page closes.
 - Snapshots copy the visible processed canvas (never the raw video), flipped like the preview when Mirror is on. They are disabled while loading, pending after blur is re-enabled, hidden, in error or stopped. `canvas.toBlob("image/png")` writes only image data (verified: `IHDR`, `IDAT`, `IEND` chunks). Snapshots are not uploaded.
+
+Live Monitor:
+
+- It reads the landmarks the worker computed for the frame that was just processed and draws its overlay from that same frame; a late or stale result never reaches it (the same session/frame checks as the blur).
+- It only observes: it never turns blur off, never shows a frame that the fail-closed rules hide, and a failure in the monitor or its overlay cannot stop the camera pipeline.
+- Only event times and short labels are kept, in memory, for this tab; no frames, landmarks, images or audio are stored or sent.
 
 Photo upload:
 
@@ -137,9 +156,9 @@ node --test tests/js/*.test.mjs
 ```
 
 - Python: invalid/corrupt files, size and pixel limits, EXIF orientation, alpha flattening, region parsing and bounds, error codes, security headers (CSP, `Permissions-Policy`, worker CSP, no inline script/style), vendored files served, blur confined to regions, metadata stripping, and that a >1 MB upload opens no file for writing and adds nothing to the temp or project directories.
-- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use, glasses layer order and failures, background masks, snapshot source/mirror/disabled states, bitmap cleanup, messages from a replaced worker, the failed stage and error class shown for camera, video, detector-load, detector-run, worker and render errors), the detector worker with fake MediaPipe tasks (tasks created one at a time, each with its own `OffscreenCanvas`), the page shell (snapshots, effect alert, background image, error card in EN/KO), and EN/KO coverage plus the saved language choice.
+- JavaScript (Node's built-in runner, no packages): upload races (stale detect/blur replies), the live camera controller with a fake camera/worker/timers (same-frame blur, cleared canvas on zero faces/timeout/error, late stream after Cancel, late result after Stop, `track.ended`, hidden page, permission errors, no network use, glasses layer order and failures, background masks, snapshot source/mirror/disabled states, bitmap cleanup, messages from a replaced worker, the failed stage and error class shown for camera, video, detector-load, detector-run, worker and render errors), the detector worker with fake MediaPipe tasks (tasks created one at a time, each with its own `OffscreenCanvas`), the alertness monitor with synthetic landmark geometry (eye/mouth/head ratios, closure timer and cue, every reset, hysteresis, calibration, history, the worker's point list), the controller's monitor hand-off (landmarks of the same frame only, overlay only on a shown frame, failures isolated), the page shell (monitor panel, cue banner, settings, clearing history (snapshots, effect alert, background image, error card in EN/KO), and EN/KO coverage plus the saved language choice.
 
-These tests use synthetic images and fakes. **They do not measure face-detection quality**, and the worker tests do not run real MediaPipe or a real browser. `tests/test_deploy.py` guards the deployment files statically; `deploy/smoke/check.sh` is the behavioural check.
+These tests use synthetic images, synthetic landmark geometry and fakes. **They do not measure face-detection or landmark quality**, and the worker tests do not run real MediaPipe or a real browser. `tests/test_deploy.py` guards the deployment files statically; `deploy/smoke/check.sh` is the behavioural check.
 
 ## Testing status
 
@@ -174,6 +193,12 @@ Chrome on iOS first showed "Face detection stopped": MediaPipe 1.0.1 picks its W
 
 **Not tested:** Firefox, Android, iPad, Windows and other devices; on the iPhone, only the camera preview was reported.
 
+### Live Monitor — what was checked
+
+- **Headless Chrome with real MediaPipe, fake camera** (desktop Chrome, a still portrait fed as video; 2026-10-24): the landmarks were found and drawn on the face; signals read "eyes open / mouth closed / facing camera"; a sequence of one face → empty frame → two faces → one face produced the states tracking → face not visible → several faces → tracking, with tracking lost/resumed logged; a hidden page and a disconnected camera (a dispatched `ended` event) ended the session and cleared the overlay; with permission denied the blocked-camera card appeared. The portrait's eyes are partly covered, so this says nothing about how well real eye closure is detected.
+- **The cue UI** was rendered by replacing the landmarks of real frames with synthetic closed-eye geometry (screenshot only).
+- **Not yet checked:** eye closure, blinking, yawning or head turns of a real person on a real camera; any accuracy of the signals. These need a real browser and camera.
+
 ## Detection evaluation — not done yet
 
 No real evaluation images have been provided, so precision/recall/count error have **not** been measured for either detector. The planned evaluation:
@@ -184,6 +209,7 @@ No real evaluation images have been provided, so precision/recall/count error ha
 
 ## Known limitations
 
+- **The Live Monitor's thresholds are heuristics, not validated:** open-eye baseline 0.30 (eye aspect ratio) until calibrated, closed below 65 % and open again above 80 % of it, mouth open above 0.3, head "facing the camera" for a nose position of 0.3–0.7 between the cheeks and 0.2–0.62 between eye line and chin. Glasses with reflections, hair over the eyes, low light, a camera far above or below the face and fast motion can all give wrong readings. Eyes are not judged while the head is turned or tilted, so a nodding head does not produce a cue.
 - **No detection evaluation** (above). The Haar cascade is frontal-face only; BlazeFace short range targets faces within about 2 m of a front-facing camera. Both are likely to miss small, rotated, profile or occluded faces.
 - Live face boxes are padded by 25% — a heuristic for BlazeFace boxes, not validated on real faces.
 - Selfie segmentation is weak on hair, hands, fast motion and several people at different distances.
@@ -200,9 +226,10 @@ app/image_io.py               Format/size validation, decode with EXIF orientati
 app/detector.py               Haar cascade detection on a downscaled grayscale copy (upload)
 app/blur.py                   Region parsing, padding/clipping, pixelate + Gaussian blur (upload)
 app/static/index.html         Page (no inline script or style)
-app/static/shell.js           Tabs, language switcher, live camera UI
+app/static/shell.js           Views, language switcher, live camera UI, Live Monitor, history and settings
 app/static/camera.js          Live camera controller: lifecycle, fail-closed frame pipeline, canvas blur
-app/static/detector-worker.mjs  MediaPipe detector, landmarker and segmenter in a module worker
+app/static/monitor.js         Alertness monitor: signals, closure timer and cue, resets, history, overlay drawing
+app/static/detector-worker.mjs  MediaPipe detector, landmarker (glasses + monitor points) and segmenter in a module worker
 app/static/app.js             Photo upload flow
 app/static/i18n.js, i18n/     EN/KO strings and the saved language choice
 app/static/vendor/mediapipe/  Vendored MediaPipe package files, model, LICENSE, SOURCES.md

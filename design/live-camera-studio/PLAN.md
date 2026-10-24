@@ -103,6 +103,32 @@ The mockup uses inline scripts and styles; it is not copied into the app, whose 
 - The image is drawn flipped when the preview is mirrored, so the preview and a mirrored snapshot show it the right
   way round.
 
+## Alertness monitor (Live Monitor)
+
+The Live Monitor reuses the camera pipeline above; it only observes it.
+
+- **Input.** When the monitor is on, every captured frame also asks the worker for face landmarks (the vendored
+  Face Landmarker, the same one as the glasses). The worker sends 77 points per face in a fixed order (eyes,
+  mouth, outer lips, nose/chin/cheeks/forehead, face oval; `MONITOR_POINTS`, checked against `monitor.js` by a
+  test). The controller hands the page (`onAnalysis`) the points of the very frame it just processed, with its
+  capture time, and draws the overlay from that frame only when the frame is shown. Late results are discarded
+  like any other result.
+- **Signals.** Eye aspect ratio (mean of both eyes), inner-lip gap / mouth width, nose position between the
+  cheeks (yaw) and between eye line and chin (pitch). Eyes are closed below `0.65 × baseline` and open again above
+  `0.8 × baseline` (hysteresis); the baseline is 0.30 until a 3 s calibration (median of at least 15 tracked,
+  centered frames, accepted between 0.15 and 0.5).
+- **Timer and cue.** The closure time is the difference between capture times of consecutive frames of one
+  tracked, centered face. A cue (sound optional) fires once per closure episode at the configured duration
+  (1–5 s, default 2 s) and ends when the eyes reopen; Dismiss hides it for that episode.
+- **Resets.** No face, several faces, an unusable result, a turned/tilted head, a gap of more than 1 s, a stale or
+  timed-out preview (`hidden` with `stale`/`timeout`), Pause, Stop, a hidden page, a disconnected camera
+  (`stop("ended")`) and an error all reset the timer and end the cue. Sessions end with the camera and record why.
+- **Privacy.** The monitor never changes blur or the fail-closed rules; landmarks are drawn over the blurred face
+  when blur is on. A failure in the monitor callback or the overlay is caught so the camera pipeline continues.
+  History (event times and labels) lives in memory for the tab only.
+- **Not claimed.** No sleep, emotion, medical or driving-safety detection; the thresholds are heuristics and have
+  not been evaluated on real people.
+
 ## Camera lifecycle
 
 | Event | Behaviour |
@@ -152,6 +178,9 @@ Landmarker and Selfie Segmenter models are Apache-2.0 per the package metadata a
 - **No quality evaluation yet.** Face detection (Haar for uploads, BlazeFace live), landmarks and segmentation have
   not been measured on annotated images; there are no precision/recall numbers. Planned: 20–30 consented or
   license-checked images with annotated faces; recall at IoU ≥ 0.5 as the primary metric.
+- The Live Monitor's signals and thresholds are unvalidated heuristics; it was checked with real MediaPipe on a
+  fake camera (still portrait) and with synthetic landmark geometry, not with a real person blinking or closing
+  their eyes.
 - Real-device checks are informal, user-reported smoke tests: a Mac with a real webcam, and the camera preview on an
   iPhone 15 Pro in Safari and in Chrome (production). Firefox, Android and other devices are untested; this is not a
   formal compatibility test.

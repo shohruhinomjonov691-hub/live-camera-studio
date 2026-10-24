@@ -62,7 +62,33 @@ sudo grep -c "buffered to a temporary file" /var/log/nginx/live-camera-studio.er
 Then upload a photo larger than 1 MB in the app and check the error log again. `sudo certbot renew --dry-run`
 checks renewals.
 
-## Rollback
+## Updating the app (and rolling it back)
+
+Only the app container changes; Nginx, the certificate and other sites are not touched. Run in the repo
+directory on the server (e.g. `/opt/live-camera-studio`):
+
+```bash
+git rev-parse HEAD > ~/lcs-previous-commit              # remember the running commit
+docker image tag live-camera-studio:local live-camera-studio:rollback
+git pull --ff-only && git log --oneline -1               # expect the reviewed commit
+docker compose up -d --build --wait                      # rebuilds and restarts only this project
+curl -s http://127.0.0.1:18765/health
+docker compose exec -T app ls -l app/static/monitor.js app/static/vendor/mediapipe/models/face_landmarker.task
+curl -s -D - -o /dev/null https://camera.gotrips.cloud/ | grep -iE "^HTTP|content-security-policy|permissions-policy"  # GET: HEAD / is 405
+```
+
+Rollback, if the new version misbehaves:
+
+```bash
+git checkout --detach "$(cat ~/lcs-previous-commit)"     # the previous source, for reference
+docker image tag live-camera-studio:rollback live-camera-studio:local
+docker compose up -d --no-build --wait
+curl -s http://127.0.0.1:18765/health
+```
+
+Return to the branch afterwards with `git checkout main` once a fixed commit is available.
+
+## Rollback (the Nginx site)
 
 Remove the symlink (or the conf.d file) and reload Nginx; the other sites are unaffected.
 
