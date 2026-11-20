@@ -377,6 +377,10 @@ async function showFrame(h, faces = [{ x: 100, y: 100, w: 80, h: 80 }]) {
   return msg;
 }
 const cleared = (canvas) => canvas.ops.at(-1)[0] === "clearRect";
+/** The engine's (late) answer for a frame the controller already dropped: it only frees the engine. */
+function answerLate(h, msg) {
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: [], inferMs: 5 });
+}
 
 test("[1] turning blur back on wipes view, overlay and buffer at once", async () => {
   const h = setup();
@@ -559,9 +563,15 @@ test("[r1] blur OFF -> ON while the first frame is still pending keeps the strea
   await h.runFrame(); // first frame in flight, still "loading"
   assert.equal(h.state(), "loading");
 
+  const dropped = h.lastDetect();
   h.camera.setSettings({ blurOn: true });
   assert.equal(h.state(), "loading");
   assert.ok(h.pendingFrames() >= 1, "a new frame is scheduled, the loop did not stall");
+  // The engine still holds the dropped frame: the next frame waits for its answer, then goes out at once.
+  await h.runFrame();
+  assert.equal(h.detects().length, 1, "no second frame behind the engine's first");
+  answerLate(h, dropped);
+  assert.ok(h.pendingFrames() >= 1, "the late answer wakes the loop");
   await showFrame(h);
   assert.equal(h.state(), "live");
   assert.equal(h.detects().length, 2);
@@ -573,13 +583,13 @@ test("[r2] a late detect error from a timed-out frame does not cancel the next f
   await h.runFrame();
   const stale = h.lastDetect();
   h.fireTimers(1000); // frame 1 times out
+  // The engine reports an error for the timed-out frame: it is ignored (no error state) and frees the engine.
+  h.worker.reply({ type: "error", stage: "detect", session: stale.session, frameId: stale.frameId, message: "late" });
+  assert.notEqual(h.state(), "error");
   await h.runFrame(); // frame 2 in flight
   const current = h.lastDetect();
   const frame2 = h.captured.at(-1);
   assert.notEqual(current.frameId, stale.frameId);
-
-  h.worker.reply({ type: "error", stage: "detect", session: stale.session, frameId: stale.frameId, message: "late" });
-  assert.notEqual(h.state(), "error");
   assert.equal(frame2.closed, false, "frame 2 is still in the pipeline");
 
   h.worker.reply({ type: "result", session: current.session, frameId: current.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }] });
@@ -1163,10 +1173,12 @@ test("[bg] every background setting change wipes, drops the job and blocks snaps
     assert.ok(h.camera.canSnapshot(), "before the change");
     await h.runFrame();
     const inFlight = h.captured.at(-1);
+    const sent = h.lastDetect();
     h.camera.setSettings(change);
     assert.equal(h.camera.canSnapshot(), false, JSON.stringify(change));
     assert.ok(cleared(h.env.view), JSON.stringify(change));
     assert.equal(inFlight.closed, true);
+    answerLate(h, sent); // the engine finishes the dropped frame; only then does it take the next one
   }
   // A new image replaces the old one (closed) and also counts as a change.
   h.camera.setSettings({ background: "image" });
@@ -1211,16 +1223,18 @@ test("[bg] timeout with a background, then recovery", async () => {
   assert.equal(h.state(), "live");
 });
 
-test("[bg] Stop -> Start keeps the segmenter; a late result of the old session is ignored", async () => {
+test("[bg] Stop -> Start keeps the segmenter if the old frame finishes before Start", async () => {
   const h = setup();
   await liveWithBackground(h);
   await h.runFrame();
   const old = h.lastDetect();
+  const worker = h.worker;
   h.camera.stop();
-  await goLive(h);
   const draws = viewDraws(h.env.view).length;
   replyBg(h, old);
   assert.equal(viewDraws(h.env.view).length, draws);
+  await goLive(h);
+  assert.equal(h.worker, worker);
   await bgFrame(h);
   assert.equal(h.state(), "live");
   assert.ok(h.captured.every((b) => b.closed));
@@ -1595,7 +1609,10 @@ test("[mon] the monitor gets the landmarks of the very frame that was processed,
   h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: MARKS, landmarksError: null });
   assert.equal(h.state(), "live");
   assert.equal(samples.length, 1);
-  assert.deepEqual(plain(samples[0]), { at: samples[0].at, faces: 1, marks: MARKS, error: null, shown: true });
+  assert.deepEqual(plain(samples[0]), {
+    at: samples[0].at, faces: 1, marks: MARKS, error: null, shown: true,
+    boxes: FACE.map(({ x, y, w, h }) => ({ x, y, w, h })), frame: { w: 640, h: 480 }, luma: { frame: null, face: null },
+  });
   assert.ok(samples[0].at > 0);
   assert.deepEqual(plain(drawn), [MARKS], "overlay drawn from the same frame");
   assert.equal(h.camera.settings.blurOn, true, "the monitor never turns face blur off");
@@ -1652,7 +1669,10 @@ test("[mon] while the landmarker loads or after it fails, the monitor is told so
   let msg = h.lastDetect();
   assert.equal(msg.landmarks, false);
   h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE });
-  assert.deepEqual(plain(samples.at(-1)), { at: samples.at(-1).at, faces: 1, marks: null, error: null, shown: true });
+  assert.deepEqual(plain(samples.at(-1)), {
+    at: samples.at(-1).at, faces: 1, marks: null, error: null, shown: true,
+    boxes: FACE.map(({ x, y, w, h }) => ({ x, y, w, h })), frame: { w: 640, h: 480 }, luma: { frame: null, face: null },
+  });
 
   h.worker.reply({ type: "landmarker-ready", initMs: 1 });
   await h.runFrame();
@@ -1774,4 +1794,498 @@ test("[r-mon] a landmarker error from a frame captured before Retry does not mar
   // The result of the frame captured before Retry arrives with an error after Retry: ignored for the state.
   h.worker.reply({ type: "result", session: stale.session, frameId: stale.frameId, faces: FACE, landmarksError: "late boom" });
   assert.equal(h.camera.effect, "loading", "a late error of an older frame does not undo the retry");
+});
+
+// ---------- Engine back-pressure, stalls, the worker/fallback engine, brightness and telemetry ----------
+
+/** A plain fake engine (worker-shaped) for tests that need to control creation or posting. */
+function plainEngine(extra = {}) {
+  return {
+    posted: [],
+    terminated: false,
+    postMessage(msg) { this.posted.push(msg); },
+    terminate() { this.terminated = true; },
+    reply(msg) { this.onmessage({ data: msg }); },
+    ...extra,
+  };
+}
+
+test("[q] a slow engine never has more than one frame behind it: later frames wait for its answer", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const first = h.lastDetect();
+  h.fireTimers(1000); // frame 1 missed its deadline, the engine has not answered
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "timeout" }]);
+  for (let i = 0; i < 5; i++) {
+    if (h.pendingFrames()) await h.runFrame();
+    await flush();
+  }
+  assert.equal(h.detects().length, 1, "no second frame is posted while the engine holds the first");
+  assert.equal(h.pendingFrames(), 0, "and the loop idles instead of spinning");
+
+  answerLate(h, first); // the engine finishes: its (stale) answer is dropped but frees it and wakes the loop
+  assert.equal(h.state(), "hidden");
+  assert.ok(h.pendingFrames() >= 1, "the loop is woken by the late answer");
+  await showFrame(h);
+  assert.equal(h.detects().length, 2);
+  assert.equal(h.state(), "live");
+  assert.equal(h.camera.stats().dropped, 1, "the missed frame is counted");
+});
+
+test("[q] an engine that never answers is replaced after the stall time: error, worker terminated, Restart recovers", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const hung = h.worker;
+  h.fireTimers(1000);
+  const stall = h.timers.findLast((t) => t.ms === 5000 && !t.done);
+  assert.ok(stall, "the stall timer runs from the missed deadline");
+  assert.equal(h.state(), "hidden");
+  stall.fn();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "WorkerStalled" }]);
+  assert.equal(hung.terminated, true);
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "error" });
+  assert.ok(cleared(h.env.view));
+
+  h.camera.restartDetector();
+  await flush();
+  assert.equal(h.workers.length, 2, "a fresh worker");
+  h.worker.reply({ type: "ready", initMs: 1 });
+  await flush();
+  await showFrame(h);
+  assert.equal(h.state(), "live");
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "active" });
+});
+
+test("[q] an answer that arrives before the stall time cancels the stall", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const first = h.lastDetect();
+  h.fireTimers(1000);
+  const stall = h.timers.findLast((t) => t.ms === 5000 && !t.done);
+  answerLate(h, first);
+  assert.equal(stall.done, true, "the stall timer was cancelled");
+  h.fireTimers(5000);
+  assert.notEqual(h.state(), "error");
+});
+
+test("[q] a stalled engine is terminated after Stop without showing an error card", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  h.fireTimers(1000);
+  const stall = h.timers.findLast((t) => t.ms === 5000 && !t.done);
+  const hung = h.worker;
+  h.camera.stop();
+  assert.equal(stall.done, false);
+  assert.equal(hung.terminated, false);
+  h.fireTimers(5000);
+  assert.equal(hung.terminated, true);
+  assert.equal(h.state(), "idle");
+});
+
+test("[q] repeated Stop and Start never send a second frame to an engine that still holds one", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  for (let i = 0; i < 2; i++) {
+    const old = h.worker;
+    const pending = h.lastDetect();
+    h.camera.stop();
+    await goLive(h);
+    assert.equal(old.terminated, true);
+    const drawn = viewDraws(h.env.view).length;
+    old.reply({ type: "result", session: pending.session, frameId: pending.frameId, faces: FACE });
+    assert.equal(viewDraws(h.env.view).length, drawn);
+    await h.runFrame();
+    assert.equal(h.detects().length, 1, "only the new session's frame is sent to the new worker");
+    assert.equal(old.posted.filter((m) => m.type === "detect").length, 1);
+  }
+  reply(h, h.lastDetect());
+  assert.equal(h.state(), "live");
+});
+
+test("[q] an engine that answers inside postMessage does not freeze the loop", async () => {
+  const h = setup();
+  const sync = plainEngine({
+    postMessage(msg) {
+      this.posted.push(msg);
+      if (msg.type === "init") this.reply({ type: "ready", initMs: 1 });
+      if (msg.type === "detect") {
+        msg.bitmap.close();
+        this.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: [{ x: 1, y: 1, w: 50, h: 50 }], inferMs: 1 });
+      }
+    },
+  });
+  h.env.createWorker = () => sync;
+  h.camera.start();
+  await flush();
+  h.gum().resolve(fakeStream());
+  await flush();
+  await flush();
+  await h.runFrame();
+  assert.equal(h.state(), "live");
+  await h.runFrame();
+  await h.runFrame();
+  assert.equal(sync.posted.filter((m) => m.type === "detect").length, 3, "every frame is answered and the next one follows");
+});
+
+test("[q] a frame that cannot be posted fails closed with the error class and releases its bitmaps", async () => {
+  const h = setup();
+  await goLive(h);
+  h.worker.postMessage = () => {
+    throw Object.assign(new Error("clone failed"), { name: "DataCloneError" });
+  };
+  await h.runFrame();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "DataCloneError" }]);
+  assert.ok(h.captured.every((b) => b.closed), "the captured frame is closed");
+  assert.ok(cleared(h.env.view));
+  assert.equal(h.worker.terminated, true);
+});
+
+test("[q] dispose terminates the worker (it holds the models in memory)", async () => {
+  const h = setup();
+  await goLive(h);
+  const worker = h.worker;
+  h.camera.dispose();
+  assert.equal(worker.terminated, true);
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "off" });
+});
+
+// ---- worker / fallback engine ----
+
+test("[fb] a worker that cannot be created falls back to the main-thread engine; frames flow through it", async () => {
+  const h = setup();
+  const engines = [];
+  const fallback = plainEngine();
+  h.env.createWorker = () => {
+    engines.push("worker");
+    throw Object.assign(new Error("module workers unsupported"), { name: "SyntaxError" });
+  };
+  h.env.createFallbackWorker = () => {
+    engines.push("fallback");
+    return fallback;
+  };
+  h.camera.start();
+  await flush();
+  h.gum().resolve(fakeStream());
+  await flush();
+  assert.deepEqual(engines, ["worker", "fallback"]);
+  assert.deepEqual(plain(h.camera.engine), { mode: "fallback", status: "starting" });
+  assert.equal(h.state(), "loading", "no preview while the engine loads");
+  fallback.reply({ type: "ready", initMs: 1 });
+  await flush();
+  await flush();
+  assert.deepEqual(plain(h.camera.engine), { mode: "fallback", status: "active" });
+  await h.runFrame();
+  const msg = fallback.posted.filter((m) => m.type === "detect").at(-1);
+  fallback.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: [{ x: 10, y: 10, w: 60, h: 60 }], inferMs: 4 });
+  assert.equal(h.state(), "live");
+  assert.equal(h.camera.stats().engine.mode, "fallback");
+});
+
+test("[fb] a worker that crashes while loading falls back with the same start (no error shown)", async () => {
+  const h = setup();
+  const fallback = plainEngine();
+  h.env.createFallbackWorker = () => fallback;
+  h.camera.start();
+  await flush();
+  h.gum().resolve(fakeStream());
+  await flush();
+  const broken = h.worker;
+  broken.onerror({ message: "blocked by CSP" });
+  assert.equal(broken.terminated, true);
+  assert.deepEqual(plain(h.camera.engine), { mode: "fallback", status: "starting" });
+  assert.ok(!h.states.some(([state]) => state === "error"), "the fallback is silent");
+  assert.ok(fallback.posted.some((m) => m.type === "init"));
+  fallback.reply({ type: "ready", initMs: 1 });
+  await flush();
+  await flush();
+  await h.runFrame();
+  assert.equal(fallback.posted.filter((m) => m.type === "detect").length, 1);
+  assert.deepEqual(plain(h.camera.engine), { mode: "fallback", status: "active" });
+});
+
+test("[fb] the fallback loads the landmarker and segmenter again (a new engine starts empty)", async () => {
+  const h = setup();
+  const fallback = plainEngine();
+  h.env.createFallbackWorker = () => fallback;
+  h.camera.setSettings({ monitor: true, background: "blur" });
+  h.camera.start();
+  await flush();
+  h.gum().resolve(fakeStream());
+  await flush();
+  const first = h.worker;
+  assert.ok(first.posted.some((m) => m.type === "init-landmarker") && first.posted.some((m) => m.type === "init-segmenter"));
+  first.onerror({ message: "x" });
+  assert.ok(fallback.posted.some((m) => m.type === "init-landmarker"));
+  assert.ok(fallback.posted.some((m) => m.type === "init-segmenter"));
+});
+
+test("[fb] without a fallback, a worker that cannot be created is a worker error with its class", async () => {
+  const h = setup();
+  h.env.createWorker = () => {
+    throw Object.assign(new Error("denied"), { name: "SecurityError" });
+  };
+  h.camera.start();
+  await flush();
+  h.gum().resolve(fakeStream());
+  await flush();
+  await flush();
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "SecurityError" }]);
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "error" });
+  assert.equal(viewDraws(h.env.view).length, 0);
+});
+
+test("[fb] a crash after the detector was ready is an error, not a silent fallback; Restart tries the worker again", async () => {
+  const h = setup();
+  const fallback = plainEngine();
+  h.env.createFallbackWorker = () => fallback;
+  await goLive(h);
+  await showFrame(h);
+  h.worker.onerror({ message: "oom" });
+  assert.deepEqual(plain(h.states.at(-1)), ["error", { kind: "worker", name: "WorkerError" }]);
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "error" });
+  assert.equal(fallback.posted.length, 0, "no silent switch while running");
+  h.camera.restartDetector();
+  await flush();
+  assert.equal(h.workers.length, 2, "Restart starts a worker first");
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "starting" });
+});
+
+test("[fb] once the worker failed to start, the next camera start uses the fallback directly; Restart tries the worker again", async () => {
+  const h = setup();
+  const engines = [];
+  h.env.createWorker = () => {
+    engines.push("worker");
+    throw new Error("no workers");
+  };
+  h.env.createFallbackWorker = () => {
+    engines.push("fallback");
+    return plainEngine();
+  };
+  h.camera.start();
+  await flush();
+  h.gum().resolve(fakeStream());
+  await flush();
+  h.camera.stop();
+  h.camera.start();
+  await flush();
+  assert.deepEqual(engines, ["worker", "fallback"], "stop does not release the engine; nothing was created again");
+  h.camera.restartDetector();
+  await flush();
+  assert.deepEqual(engines, ["worker", "fallback", "worker", "fallback"], "Restart tries the worker first");
+});
+
+// ---- brightness and telemetry ----
+
+function lumaCanvas(read) {
+  return {
+    width: 0,
+    height: 0,
+    getContext: () => ({ drawImage() {}, clearRect() {}, getImageData: () => ({ data: new Uint8ClampedArray(24 * 24 * 4).fill(read()) }) }),
+  };
+}
+
+test("[q] brightness comes from the captured frame and the largest face, at most twice a second", async () => {
+  const h = setup();
+  const samples = [];
+  h.env.onAnalysis = (s) => samples.push(s);
+  let level = 200;
+  let reads = 0;
+  await liveWithMonitor(h);
+  h.env.makeCanvas = () => lumaCanvas(() => (reads++, level));
+  let clock = 5000;
+  h.env.now = () => clock;
+  const runFrame = async () => {
+    await h.runFrame();
+    const msg = h.lastDetect();
+    h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: MARKS, landmarksError: null, inferMs: 1 });
+  };
+  await runFrame();
+  assert.ok(Math.abs(samples[0].luma.frame - 200) < 0.01 && Math.abs(samples[0].luma.face - 200) < 0.01);
+  assert.equal(reads, 2, "one read for the frame and one for the face");
+  level = 40;
+  clock = 5100;
+  await runFrame();
+  assert.equal(reads, 2, "within 500 ms the last reading is reused");
+  assert.ok(Math.abs(samples[1].luma.frame - 200) < 0.01);
+  clock = 5600;
+  await runFrame();
+  assert.ok(Math.abs(samples[2].luma.frame - 40) < 0.01 && Math.abs(samples[2].luma.face - 40) < 0.01);
+});
+
+test("[q] a brightness reading that fails is 'no reading', never a made-up value; the frame is unaffected", async () => {
+  const h = setup();
+  const samples = [];
+  let clearedLuma = 0;
+  h.env.onAnalysis = (s) => samples.push(s);
+  await liveWithMonitor(h);
+  h.env.makeCanvas = () => ({
+    width: 0,
+    height: 0,
+    getContext: () => ({
+      drawImage() {},
+      clearRect() { clearedLuma++; },
+      getImageData() {
+        throw new Error("readback blocked");
+      },
+    }),
+  });
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "result", session: msg.session, frameId: msg.frameId, faces: FACE, marks: MARKS, landmarksError: null });
+  assert.equal(h.state(), "live");
+  assert.deepEqual(plain(samples[0].luma), { frame: null, face: null });
+  assert.equal(clearedLuma, 1, "pixels are cleared even when readback fails");
+});
+
+test("[q] no brightness is read when the monitor is off", async () => {
+  const h = setup();
+  let reads = 0;
+  await goLive(h);
+  h.env.makeCanvas = () => lumaCanvas(() => (reads++, 100));
+  await showFrame(h);
+  assert.equal(reads, 0);
+});
+
+test("[q] stats carry the dropped-frame count and the engine status, and reset when the camera stops", async () => {
+  const h = setup();
+  const seen = [];
+  h.env.onStats = (s) => seen.push(s);
+  const engines = [];
+  h.env.onEngine = (e) => engines.push(plain(e));
+  await goLive(h);
+  await showFrame(h);
+  assert.deepEqual(plain(seen.at(-1).engine), { mode: "worker", status: "active" });
+  assert.equal(seen.at(-1).dropped, 0);
+  assert.equal(seen.at(-1).samples, 1);
+  assert.equal(seen.at(-1).frameSize.w, 640);
+  assert.deepEqual(engines, [{ mode: "worker", status: "starting" }, { mode: "worker", status: "active" }]);
+  await h.runFrame();
+  h.fireTimers(1000);
+  assert.equal(h.camera.stats().dropped, 1);
+  h.camera.stop();
+  const stopped = h.camera.stats();
+  assert.equal(stopped.dropped, 0);
+  assert.equal(stopped.samples, 0);
+  assert.equal(stopped.frameSize, null);
+  assert.equal(stopped.latencyMs, null);
+  for (const key of ["inferP50", "inferP95", "latencyP50", "latencyP95"]) {
+    assert.equal(stopped[key], null, key);
+  }
+  await goLive(h);
+  await showFrame(h);
+  assert.equal(seen.at(-1).samples, 1);
+});
+
+// ---- idle release of the engine ----
+
+test("[idle] after Stop the engine is released once the idle time has passed; a Start before that keeps it", async () => {
+  const h = setup();
+  await goLive(h);
+  const worker = h.worker;
+  h.camera.stop();
+  const idle = h.timers.findLast((t) => t.ms === 60000 && !t.done);
+  assert.ok(idle, "an idle timer starts with Stop");
+  assert.equal(worker.terminated, false, "not at once: a quick restart stays fast");
+  idle.fn();
+  assert.equal(worker.terminated, true);
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "off" });
+  await goLive(h); // a new start builds a fresh engine
+  assert.equal(h.workers.length, 2);
+
+  h.camera.stop();
+  const second = h.timers.findLast((t) => t.ms === 60000 && !t.done);
+  h.camera.start();
+  assert.equal(second.done, true, "Start cancels the idle release");
+});
+
+test("[idle] the idle release never touches a running camera", async () => {
+  const h = setup();
+  await goLive(h);
+  h.camera.stop();
+  const idle = h.timers.findLast((t) => t.ms === 60000 && !t.done);
+  h.camera.start(); // prompt, stream pending
+  idle.fn(); // a stale callback
+  assert.equal(h.worker.terminated, false);
+});
+
+test("[idle] a refused camera permission releases the engine that was started for it", async () => {
+  const h = setup();
+  h.camera.start();
+  await flush();
+  const worker = h.worker;
+  h.gum().reject(Object.assign(new Error("no"), { name: "NotAllowedError" }));
+  await flush();
+  assert.equal(h.state(), "denied");
+  const idle = h.timers.findLast((t) => t.ms === 60000 && !t.done);
+  assert.ok(idle);
+  idle.fn();
+  assert.equal(worker.terminated, true);
+});
+
+// ---------- Review round 1 ----------
+
+test("[r1] after a transient detect error the next result brings the engine status back to active", async () => {
+  const h = setup();
+  await goLive(h);
+  await h.runFrame();
+  const msg = h.lastDetect();
+  h.worker.reply({ type: "error", stage: "detect", session: msg.session, frameId: msg.frameId, message: "boom" });
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "error" });
+  h.camera.stop();
+  h.camera.start(); // the same, already loaded worker is reused: it does not announce "ready" again
+  await flush();
+  h.gum().resolve(fakeStream());
+  await flush();
+  await flush();
+  assert.equal(h.workers.length, 1);
+  await showFrame(h);
+  assert.equal(h.state(), "live");
+  assert.deepEqual(plain(h.camera.engine), { mode: "worker", status: "active" });
+});
+
+test("[r2] a deadline drop refreshes the telemetry at once; a frame being captured is not sent to an engine that is still loading", async () => {
+  const h = setup();
+  const seen = [];
+  h.env.onStats = (s) => seen.push(s);
+  await goLive(h);
+  await showFrame(h);
+  const before = seen.length;
+  await h.runFrame();
+  h.fireTimers(1000);
+  assert.ok(seen.length > before);
+  assert.equal(seen.at(-1).dropped, 1);
+
+  const g = setup({ deferBitmaps: true });
+  await goLive(g);
+  await g.runFrame(); // the first bitmap is pending
+  g.camera.restartDetector(); // a new worker, not ready yet
+  g.bitmapRequests[0].resolve();
+  await flush();
+  g.bitmapRequests[1] && g.bitmapRequests[1].resolve();
+  await flush();
+  assert.equal(g.workers.at(-1).posted.filter((m) => m.type === "detect").length, 0, "nothing is posted to the loading worker");
+  assert.notEqual(g.state(), "error");
+});
+
+test("[r3] a throwing stats callback cannot stop the loop after a timeout or a successful frame", async () => {
+  const h = setup();
+  h.env.onStats = () => {
+    throw new Error("ui bug");
+  };
+  await goLive(h);
+  await h.runFrame();
+  const late = h.lastDetect();
+  h.fireTimers(1000);
+  assert.deepEqual(plain(h.states.at(-1)), ["hidden", { why: "timeout" }]);
+  assert.ok(cleared(h.env.view));
+  assert.ok(h.pendingFrames() >= 1, "the loop was rescheduled");
+  answerLate(h, late);
+  await showFrame(h);
+  assert.equal(h.state(), "live");
+  assert.ok(h.pendingFrames() >= 1, "the next frame is scheduled after recovery");
 });

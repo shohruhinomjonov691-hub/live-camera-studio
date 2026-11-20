@@ -84,6 +84,12 @@ def test_security_headers_allow_wasm_and_camera_only_for_self(client):
     assert worker.status_code == 200
     assert worker.headers["content-security-policy"] == csp
     assert worker.headers["content-type"].startswith("text/javascript")
+    # The detector core is imported by the worker and, as the fallback, by the page itself.
+    core = client.get("/static/detector-core.mjs")
+    assert core.status_code == 200
+    assert core.headers["content-security-policy"] == csp
+    assert core.headers["content-type"].startswith("text/javascript")
+    assert "createDetectorCore" in core.text and "createDetectorCore" in worker.text
 
 
 def test_page_has_no_inline_script_or_style(client):

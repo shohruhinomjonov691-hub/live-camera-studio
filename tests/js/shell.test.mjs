@@ -56,6 +56,7 @@ function loadShell({ realCamera = false } = {}) {
   const track = { stopped: false, stop() { this.stopped = true; }, addEventListener() {} };
   const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
   const windowListeners = {};
+  const shellEnv = { value: null }; // the env the shell gave the (fake) camera controller: lets tests call its callbacks
   const urls = { created: [], revoked: [] };
   let pendingBlob = null;
   const camera = {
@@ -107,7 +108,7 @@ function loadShell({ realCamera = false } = {}) {
       },
       revokeObjectURL: (url) => urls.revoked.push(url),
     },
-    ...(realCamera ? {} : { createCameraController: () => camera }),
+    ...(realCamera ? {} : { createCameraController: (env) => ((shellEnv.value = env), camera) }),
     addEventListener: (type, fn) => (windowListeners[type] ||= []).push(fn),
     document: {
       documentElement: {},
@@ -134,6 +135,7 @@ function loadShell({ realCamera = false } = {}) {
   for (const file of files) vm.runInContext(read(file), context);
   return {
     context,
+    shellEnv,
     urls,
     el: (selector) => elements.get(selector),
     encode: () => pendingBlob({ size: 123, type: "image/png" }),
@@ -669,4 +671,291 @@ test("[mon] the calibration button is enabled only while one face is tracked", a
   assert.equal(h.el("#s-calibrate").disabled, false);
   h.el("#s-calibrate").listeners.click.forEach((fn) => fn());
   assert.equal(h.el("#s-cal-status").textContent, EN("set.cal.running"));
+});
+
+// ---------- Face count, head pose, frame quality and performance telemetry in the Live Monitor ----------
+
+const KO = (key) => {
+  const context = { window: {} };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(read("i18n/ko.js"), context);
+  return context.LCS_I18N.ko[key];
+};
+
+/** The shell with a fake camera controller that is "live"; tests feed the monitor and the controller's callbacks. */
+function liveShell() {
+  const h = loadShell();
+  const env = h.shellEnv.value;
+  env.onState("live", { faces: 1, blurOn: true });
+  return { h, env, monitor: h.context.liveCameraShell.monitor };
+}
+
+/** Synthetic face landmarks (same layout as the monitor tests) with a chosen nose position between the cheeks. */
+function faceMarks(h, { ear = 0.3, yaw = 0.5, pitch = 0.4 } = {}) {
+  const I = h.context.alertnessMonitorInternals;
+  const g = ear * 30;
+  const pts = [];
+  pts.push([100, 100], [110, 100 - g / 2], [120, 100 - g / 2], [130, 100], [120, 100 + g / 2], [110, 100 + g / 2]);
+  pts.push([170, 100], [180, 100 - g / 2], [190, 100 - g / 2], [200, 100], [190, 100 + g / 2], [180, 100 + g / 2]);
+  pts.push([150, 169], [150, 171], [130, 170], [170, 170]);
+  I.MONITOR_LANDMARKS.lips.forEach((_, i) => pts.push([150 + 24 * Math.cos(i), 170 + 10 * Math.sin(i)]));
+  pts.push([80 + yaw * 140, 100 + pitch * 100], [150, 200], [80, 120], [220, 120], [150, 40]);
+  I.MONITOR_LANDMARKS.oval.forEach((_, i) => pts.push([150 + 75 * Math.sin(i / 6), 120 - 85 * Math.cos(i / 6)]));
+  return pts.flat();
+}
+
+const BOX = { x: 220, y: 110, w: 200, h: 260 };
+const frameSample = (h, at, extra = {}, pose = {}) => ({
+  at, faces: 1, marks: [faceMarks(h, pose)], error: null, shown: true, boxes: [BOX], frame: { w: 640, h: 480 },
+  luma: { frame: 120, face: 120 }, ...extra,
+});
+
+test("[tel] the performance rows show FPS, delay, Smooth / Moderate / Lag and Worker Active / Fallback / Error", () => {
+  const { h, env } = liveShell();
+  assert.equal(h.el("#perf-fps").textContent, "—", "nothing measured yet");
+  assert.equal(h.el("#perf-engine").textContent, EN("engine.off"));
+  env.onEngine({ mode: "worker", status: "starting" });
+  assert.equal(h.el("#perf-engine").textContent, EN("engine.starting"));
+  env.onEngine({ mode: "worker", status: "active" });
+  env.onStats({ fps: 28.4, latencyMs: 41.2, latencyP50: 40, dropped: 0, frameSize: { w: 640, h: 480 } });
+  assert.equal(h.el("#perf-fps").textContent, "28 FPS");
+  assert.equal(h.el("#perf-latency").textContent, "41 ms");
+  assert.equal(h.el("#perf-level").textContent, EN("perf.smooth"));
+  assert.equal(h.el("#perf-engine").textContent, EN("engine.worker"));
+  assert.equal(h.el("#perf-note").hidden, true);
+
+  env.onStats({ fps: 12, latencyMs: 80, latencyP50: 80, dropped: 0 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.moderate"));
+  env.onStats({ fps: 30, latencyMs: 200, latencyP50: 200, dropped: 0 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.moderate"), "a long delay alone is Moderate");
+  env.onStats({ fps: 5, latencyMs: 80, latencyP50: 80, dropped: 0 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.lag"));
+  env.onStats({ fps: 30, latencyMs: 500, latencyP50: 500, dropped: 0 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.lag"));
+
+  env.onEngine({ mode: "fallback", status: "active" });
+  assert.equal(h.el("#perf-engine").textContent, EN("engine.fallback"));
+  env.onEngine({ mode: "worker", status: "error" });
+  assert.equal(h.el("#perf-engine").textContent, EN("engine.error"));
+});
+
+test("[tel] a frame that missed its deadline counts as Lag for a few seconds and is reported", () => {
+  const { h, env } = liveShell();
+  env.onStats({ fps: 30, latencyMs: 40, latencyP50: 40, dropped: 0 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.smooth"));
+  env.onStats({ fps: 30, latencyMs: 40, latencyP50: 40, dropped: 2 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.lag"));
+  assert.equal(h.el("#perf-note").hidden, false);
+  assert.equal(h.el("#perf-note").textContent, "Late frames: 2");
+});
+
+test("[tel] the level thresholds, and no level without a measurement", () => {
+  const { performanceLevel } = loadShell().context.liveCameraShell;
+  assert.equal(performanceLevel(null, false), null);
+  assert.equal(performanceLevel({ fps: null }, false), null);
+  assert.equal(performanceLevel({ fps: 15, latencyMs: 150 }, false), "smooth");
+  assert.equal(performanceLevel({ fps: 14.9, latencyMs: 10 }, false), "moderate");
+  assert.equal(performanceLevel({ fps: 30, latencyMs: 151 }, false), "moderate");
+  assert.equal(performanceLevel({ fps: 7.9, latencyMs: 10 }, false), "lag");
+  assert.equal(performanceLevel({ fps: 30, latencyMs: 401 }, false), "lag");
+  assert.equal(performanceLevel({ fps: 30, latencyMs: 10, latencyP50: 500 }, false), "lag", "the median delay is preferred");
+  assert.equal(performanceLevel({ fps: 30, latencyMs: 10 }, true), "lag");
+});
+
+test("[tel] the telemetry follows the language and is empty while the camera is off", () => {
+  const { h, env } = liveShell();
+  env.onEngine({ mode: "worker", status: "active" });
+  env.onStats({ fps: 28.4, latencyMs: 41.2, latencyP50: 40, dropped: 0 });
+  h.context.i18n.setLang("ko");
+  assert.equal(h.el("#perf-level").textContent, KO("perf.smooth"));
+  assert.equal(h.el("#perf-engine").textContent, KO("engine.worker"));
+  env.onState("idle", null);
+  assert.equal(h.el("#perf-fps").textContent, "—");
+  assert.equal(h.el("#perf-level").textContent, "—");
+});
+
+test("[faces] 0, 1 and several faces show their labels; the count is visible even without landmarks", () => {
+  const { h, monitor } = liveShell();
+  monitor.update({ at: 0, faces: 0, marks: [], error: null, shown: true });
+  assert.equal(h.el("#sig-faces").textContent, "0 Face (No Face)");
+  assert.equal(h.el("#sig-faces").className, "warn");
+  monitor.update(frameSample(h, 100));
+  assert.equal(h.el("#sig-faces").textContent, "1 Face (Single)");
+  assert.equal(h.el("#sig-faces").className, "ok");
+  monitor.update(frameSample(h, 200, { faces: 3, marks: [faceMarks(h), faceMarks(h), faceMarks(h)] }));
+  assert.equal(h.el("#sig-faces").textContent, "Multiple Faces (2+ Detected)");
+  monitor.update(frameSample(h, 300, { faces: 2, marks: null, error: "landmarker" }));
+  assert.equal(h.el("#sig-faces").textContent, "Multiple Faces (2+ Detected)");
+  h.context.i18n.setLang("ko");
+  assert.equal(h.el("#sig-faces").textContent, KO("faces.multiple"));
+});
+
+test("[pose] the head row shows Center / Forward, Turned Left / Right with an angle, and Tilted Up / Down", () => {
+  const { h, monitor } = liveShell();
+  const head = () => h.el("#sig-head").textContent;
+  monitor.update(frameSample(h, 0));
+  assert.equal(head(), "Center / Forward");
+  monitor.update(frameSample(h, 50, {}, { yaw: 0.8 }));
+  assert.equal(head(), "Turned Left ~35°");
+  monitor.update(frameSample(h, 100, {}, { yaw: 0.2 }));
+  assert.equal(head(), "Turned Right ~35°");
+  monitor.update(frameSample(h, 150, {}, { pitch: 0.75 }));
+  assert.equal(head(), "Tilted Down");
+  monitor.update(frameSample(h, 200, {}, { pitch: 0.1 }));
+  assert.equal(head(), "Tilted Up");
+  monitor.update(frameSample(h, 250, { faces: 0, marks: [] }));
+  assert.equal(head(), "—", "no face, no reading");
+  monitor.update(frameSample(h, 300, {}, { yaw: 0.8 }));
+  h.context.i18n.setLang("ko");
+  assert.equal(head(), KO("signals.head.turnedLeft").replace("{deg}", "35"));
+});
+
+test("[quality] the status row shows Normal, Low Light Warning, Out of Frame / Partial and Recalibration Needed with a hint", () => {
+  const { h, monitor } = liveShell();
+  const row = () => h.el("#sig-quality").textContent;
+  const hint = () => h.el("#quality-hint");
+  assert.equal(row(), "—");
+  for (let at = 0; at <= 1500; at += 50) monitor.update(frameSample(h, at));
+  assert.equal(row(), "Normal");
+  assert.equal(hint().hidden, true);
+
+  for (let at = 1550; at <= 3000; at += 50) monitor.update(frameSample(h, at, { luma: { frame: 20, face: 20 } }));
+  assert.equal(row(), "Low Light Warning");
+  assert.equal(h.el("#sig-quality").className, "warn");
+  assert.equal(hint().hidden, false);
+  assert.equal(hint().textContent, EN("quality.hint.lowLight"));
+
+  for (let at = 3050; at <= 5000; at += 50) monitor.update(frameSample(h, at, { boxes: [{ x: -100, y: 110, w: 200, h: 260 }] }));
+  assert.equal(row(), "Out of Frame / Partial");
+  assert.equal(hint().textContent, EN("quality.hint.outOfFrame"));
+
+  const other = liveShell();
+  for (let at = 0; at <= 11000; at += 50) other.monitor.update(frameSample(other.h, at, {}, { ear: 0.45 }));
+  assert.equal(other.h.el("#sig-quality").textContent, "Recalibration Needed");
+  assert.equal(other.h.el("#quality-hint").textContent, EN("quality.hint.recalibrate"));
+  other.h.context.i18n.setLang("ko");
+  assert.equal(other.h.el("#sig-quality").textContent, KO("quality.recalibrate"));
+  assert.equal(other.h.el("#quality-hint").textContent, KO("quality.hint.recalibrate"));
+});
+
+test("[quality] a quality change is a session event with its level; the exact labels are the specified ones", () => {
+  const { h, monitor } = liveShell();
+  for (let at = 0; at <= 1500; at += 50) monitor.update(frameSample(h, at));
+  for (let at = 1550; at <= 3000; at += 50) monitor.update(frameSample(h, at, { luma: { frame: 20, face: 20 } }));
+  const event = monitor.snapshot().session.events.find((e) => e.type === "quality");
+  assert.equal(event.detail.level, "lowLight");
+  assert.equal(EN("ev.quality"), "Frame quality");
+  for (const [key, text] of Object.entries({
+    "quality.normal": "Normal",
+    "quality.lowLight": "Low Light Warning",
+    "quality.outOfFrame": "Out of Frame / Partial",
+    "quality.recalibrate": "Recalibration Needed",
+    "faces.none": "0 Face (No Face)",
+    "faces.single": "1 Face (Single)",
+    "faces.multiple": "Multiple Faces (2+ Detected)",
+    "perf.smooth": "Smooth",
+    "perf.moderate": "Moderate",
+    "perf.lag": "Lag",
+    "engine.worker": "Worker Active",
+    "engine.error": "Worker Error",
+  })) assert.equal(EN(key), text, key);
+  assert.match(EN("engine.fallback"), /^Fallback/);
+});
+
+test("[fb] the main-thread engine releases frames it will not process, and reports a core that cannot load", async () => {
+  const { createFallbackEngine } = loadShell().context.liveCameraShell;
+  const engine = createFallbackEngine();
+  const errors = [];
+  engine.onerror = (event) => errors.push(event);
+  const waiting = { closed: false, close() { this.closed = true; } };
+  engine.postMessage({ type: "detect", bitmap: waiting }); // the core is still loading: queued
+  engine.terminate();
+  assert.equal(waiting.closed, true, "queued frames are closed on terminate");
+  const late = { closed: false, close() { this.closed = true; } };
+  engine.postMessage({ type: "detect", bitmap: late });
+  assert.equal(late.closed, true, "frames after terminate are closed at once");
+  await flush();
+  await flush();
+  assert.equal(errors.length, 0, "a terminated engine reports nothing");
+
+  const failing = createFallbackEngine(); // no module loader in this test environment: the import is rejected
+  const seen = [];
+  failing.onerror = (event) => seen.push(event);
+  await flush();
+  await flush();
+  assert.equal(seen.length, 1);
+  assert.ok(typeof seen[0].message === "string" && seen[0].message.length > 0);
+});
+
+// ---------- Switch-camera button: enumerateDevices failures ----------
+
+test("[dev] a refused enumerateDevices() is not an unhandled rejection; the button stays hidden and the next live start asks again", async () => {
+  const rejections = [];
+  const onRejection = (reason) => rejections.push(reason);
+  process.on("unhandledRejection", onRejection);
+  try {
+    const { context, shellEnv } = loadShell();
+    const flip = new FakeElement();
+    flip.hidden = true;
+    context.document.querySelectorAll = (selector) => (selector === "[data-act=flip]" ? [flip] : []);
+    let calls = 0;
+    let answer = () => Promise.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" }));
+    context.navigator.mediaDevices.enumerateDevices = () => (calls++, answer());
+
+    shellEnv.value.onState("live", { faces: 1, blurOn: true });
+    await flush();
+    await flush();
+    assert.equal(calls, 1);
+    assert.equal(flip.hidden, true, "no cameras known: stays hidden");
+    shellEnv.value.onState("live", { faces: 1, blurOn: true });
+    await flush();
+    assert.equal(calls, 2, "a failed check is retried");
+
+    answer = () => Promise.resolve([{ kind: "videoinput" }, { kind: "videoinput" }, { kind: "audioinput" }]);
+    shellEnv.value.onState("live", { faces: 1, blurOn: true });
+    await flush();
+    assert.equal(calls, 3);
+    assert.equal(flip.hidden, false, "two cameras: the button is shown");
+    shellEnv.value.onState("live", { faces: 1, blurOn: true });
+    await flush();
+    assert.equal(calls, 3, "asked once it worked");
+    await flush();
+    assert.deepEqual(rejections, []);
+  } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+});
+
+test("[dev] a single camera keeps the button hidden; two overlapping live callbacks ask only once", async () => {
+  const { context, shellEnv } = loadShell();
+  const flip = new FakeElement();
+  flip.hidden = false;
+  context.document.querySelectorAll = (selector) => (selector === "[data-act=flip]" ? [flip] : []);
+  let calls = 0;
+  context.navigator.mediaDevices.enumerateDevices = async () => (calls++, [{ kind: "videoinput" }]);
+  shellEnv.value.onState("live", { faces: 1, blurOn: true });
+  shellEnv.value.onState("live", { faces: 1, blurOn: true });
+  await flush();
+  await flush();
+  assert.equal(calls, 1);
+  assert.equal(flip.hidden, true);
+});
+
+test("[r1] the late-frame bookkeeping starts again with the camera", () => {
+  const { h, env } = liveShell();
+  env.onStats({ fps: 30, latencyMs: 40, latencyP50: 40, dropped: 3 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.lag"));
+  env.onState("idle", null);
+  env.onState("live", { faces: 1, blurOn: true });
+  assert.equal(h.el("#perf-fps").textContent, "—", "the old session's FPS is gone");
+  assert.equal(h.el("#perf-note").hidden, true);
+  env.onStats({ fps: null, latencyMs: null, latencyP50: null, dropped: 1 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.lag"), "a timeout already indicates lag before the first FPS reading");
+  env.onState("idle", null);
+  env.onState("live", { faces: 1, blurOn: true });
+  env.onStats({ fps: 30, latencyMs: 40, latencyP50: 40, dropped: 0 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.smooth"), "an old drop no longer counts");
+  env.onStats({ fps: 30, latencyMs: 40, latencyP50: 40, dropped: 1 });
+  assert.equal(h.el("#perf-level").textContent, EN("perf.lag"), "the new session's first drop is seen");
 });

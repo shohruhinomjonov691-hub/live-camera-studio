@@ -14,9 +14,13 @@
 //   No face, several faces, an invalid result, a frame gap, a turned head, a pause, Stop, a hidden page or a
 //   camera error all reset it (and end an active alert).
 // - Nothing leaves the browser; history lives in memory and is gone when the page closes.
+//
+// Besides the closure timer it reports (all from the same real frames, none of it diagnostic):
+// - face count (from the detector) and head pose: direction (left/right/up/down) and an approximate left/right angle;
+// - a frame-quality status: normal | lowLight | outOfFrame | recalibrate (or unknown when there is nothing to judge).
 (function (global) {
   // MediaPipe face-mesh indices, in the order the worker sends them (flat [x0, y0, x1, y1, ...] per face).
-  // Keep in sync with app/static/detector-worker.mjs (a test checks this).
+  // Keep in sync with app/static/detector-core.mjs (a test checks this).
   const MONITOR_LANDMARKS = {
     // Eye aspect ratio order: corner, upper, upper, corner, lower, lower.
     eyeR: [33, 160, 158, 133, 153, 144],
@@ -57,6 +61,22 @@
   const CHART_WINDOW_MS = 30000;
   const MAX_EVENTS = 200;
   const MAX_SESSIONS = 20;
+  // Frame quality. Brightness is the mean luma (0–255) of the face, or of the whole frame when no face is found;
+  // two thresholds (hysteresis) keep the warning from flickering. These are heuristics, not measurements of exposure.
+  const LOW_LIGHT_ENTER = 55;
+  const LOW_LIGHT_EXIT = 70;
+  const EDGE_TOUCH = 0.01; // a face box this close to the frame edge (fraction of the frame) counts as cut off
+  const EDGE_EXIT = 0.08; // a face that vanishes while its box was this close to an edge has left the frame
+  const EXIT_MS = 2000; // ... for this long after it was last seen
+  const VISIBLE_MIN = 0.9; // less of the face box inside the frame than this: partial
+  const QUALITY_HOLD_MS = 1000; // a level must hold this long before it is shown
+  // Recalibration is advised when open-eye readings sit persistently far from the baseline (relative to it).
+  const RECAL_WINDOW_MS = 12000;
+  const RECAL_MIN_SPAN_MS = 8000;
+  const RECAL_MIN_SAMPLES = 40;
+  const RECAL_HIGH = 1.4; // median above this: the baseline is too low, closing eyes would not be noticed
+  const RECAL_LOW = 0.78; // median between CLOSE_RATIO and this: open eyes sit next to the closing threshold
+  const RECAL_EVERY_MS = 500;
 
   const point = (marks, group, i) => {
     const k = (OFFSETS[group] + i) * 2;
@@ -97,7 +117,11 @@
     if (yaw < YAW_RANGE[0] || yaw > YAW_RANGE[1]) head = "turned";
     else if (pitch > PITCH_RANGE[1]) head = "down";
     else if (pitch < PITCH_RANGE[0]) head = "up";
-    return { ear, mar, yaw, pitch, head, mouth: mar > MOUTH_OPEN ? "open" : "closed" };
+    // Approximate left/right angle from the nose position between the cheeks (nose offset ~ sin of the angle).
+    // The camera image is not mirrored, so a nose nearer image-left (landmark 234 side) is the person's RIGHT.
+    // Positive = turned to the person's left. Only a rough indicator: it is not a calibrated head-pose estimate.
+    const yawDeg = (Math.asin(Math.max(-1, Math.min(1, (yaw - 0.5) * 2))) * 180) / Math.PI;
+    return { ear, mar, yaw, pitch, yawDeg, head, mouth: mar > MOUTH_OPEN ? "open" : "closed" };
   }
 
   function median(values) {
@@ -130,6 +154,14 @@
     let metrics = null; // last measure() result of a tracked face
     let chart = []; // [{at, value}] value = ear / baseline (relative openness)
     let lastTracked = null; // status before tracking was lost, to log "resumed" once
+    let faces = null; // detector face count of the last frame (null: no frame)
+    let lowLight = false;
+    let lastFace = null; // {at, edge} last frame with a face: was it close to an edge?
+    let quality = "unknown"; // shown level: unknown | normal | lowLight | outOfFrame | recalibrate
+    let qualityCandidate = null; // {level, since}: a new level waiting out QUALITY_HOLD_MS
+    let recal = []; // [{at, ratio}] open-eye readings of tracked, centered frames (ratio = ear / baseline)
+    let recalNeeded = false;
+    let recalCheckedAt = -Infinity;
 
     function clampAlert(ms) {
       const n = Number(ms);
@@ -141,7 +173,12 @@
     function log(type, at, detail = null) {
       if (!session) return;
       session.events.push({ type, wall: toWall(at), detail });
-      if (session.events.length > MAX_EVENTS) session.events.shift();
+      if (session.events.length > MAX_EVENTS) {
+        // Frame-quality changes can flap (light around a threshold): they are the first to go, so they can never push
+        // out "started", a cue or the tracking events.
+        const noise = session.events.findIndex((e) => e.type === "quality");
+        session.events.splice(noise >= 0 ? noise : 0, 1);
+      }
     }
 
     function emit() {
@@ -154,6 +191,86 @@
       alert = null;
       closedSince = null;
       eyes = "unknown";
+      recal = []; // tracking was interrupted: the recalibration check needs one unbroken stretch
+    }
+
+    function resetQuality() {
+      faces = null;
+      lowLight = false;
+      lastFace = null;
+      quality = "unknown";
+      qualityCandidate = null;
+      recal = [];
+      recalNeeded = false;
+      recalCheckedAt = -Infinity;
+    }
+
+    /** True when `box` ({x, y, w, h}, frame pixels) is cut by the frame or touches its edge. */
+    function boxPartial(box, frame) {
+      const { w: W, h: H } = frame;
+      const x1 = Math.min(W, box.x + box.w);
+      const y1 = Math.min(H, box.y + box.h);
+      const x0 = Math.max(0, box.x);
+      const y0 = Math.max(0, box.y);
+      const visible = x1 > x0 && y1 > y0 ? ((x1 - x0) * (y1 - y0)) / (box.w * box.h) : 0;
+      const touching = box.x <= W * EDGE_TOUCH || box.y <= H * EDGE_TOUCH || box.x + box.w >= W * (1 - EDGE_TOUCH) || box.y + box.h >= H * (1 - EDGE_TOUCH);
+      return visible < VISIBLE_MIN || touching;
+    }
+
+    function boxNearEdge(box, frame) {
+      return box.x <= frame.w * EDGE_EXIT || box.y <= frame.h * EDGE_EXIT || box.x + box.w >= frame.w * (1 - EDGE_EXIT) || box.y + box.h >= frame.h * (1 - EDGE_EXIT);
+    }
+
+    const validBox = (b) => b && [b.x, b.y, b.w, b.h].every(Number.isFinite) && b.w > 0 && b.h > 0;
+
+    function needsRecalibration(at) {
+      if (calibrationStatus === "failed") return true;
+      if (at - recalCheckedAt < RECAL_EVERY_MS) return recalNeeded;
+      recalCheckedAt = at;
+      recalNeeded = false;
+      while (recal.length && recal[0].at < at - RECAL_WINDOW_MS) recal.shift();
+      if (!alert && recal.length >= RECAL_MIN_SAMPLES && recal[recal.length - 1].at - recal[0].at >= RECAL_MIN_SPAN_MS) {
+        const med = median(recal.map((r) => r.ratio));
+        recalNeeded = med > RECAL_HIGH || (med >= CLOSE_RATIO && med < RECAL_LOW);
+      }
+      return recalNeeded;
+    }
+
+    /** The quality level this frame alone points to (before the hold time). */
+    function rawQuality(sample, at) {
+      const n = Number.isFinite(sample.faces) ? sample.faces : null;
+      const luma = sample.luma && Number.isFinite(sample.luma.face) ? sample.luma.face : sample.luma && Number.isFinite(sample.luma.frame) ? sample.luma.frame : null;
+      if (luma !== null) {
+        if (luma < LOW_LIGHT_ENTER) lowLight = true;
+        else if (luma > LOW_LIGHT_EXIT) lowLight = false;
+      }
+      if (lowLight) return "lowLight";
+      const frame = sample.frame && sample.frame.w > 0 && sample.frame.h > 0 ? sample.frame : null;
+      const boxes = frame && Array.isArray(sample.boxes) ? sample.boxes.filter(validBox) : [];
+      if (n > 0 && boxes.length) {
+        const largest = boxes.reduce((best, b) => (b.w * b.h > best.w * best.h ? b : best));
+        lastFace = { at, edge: boxNearEdge(largest, frame) };
+        if (boxes.some((b) => boxPartial(b, frame))) return "outOfFrame";
+      } else if (n === 0 && lastFace && lastFace.edge && at - lastFace.at <= EXIT_MS) {
+        return "outOfFrame"; // the face vanished next to an edge: it left the frame
+      }
+      if (n === 0 || n === null) return "unknown"; // nothing to judge
+      return needsRecalibration(at) ? "recalibrate" : "normal";
+    }
+
+    function assessQuality(sample, at) {
+      const raw = rawQuality(sample, at);
+      if (raw === quality) {
+        qualityCandidate = null;
+        return;
+      }
+      if (!qualityCandidate || qualityCandidate.level !== raw) qualityCandidate = { level: raw, since: at };
+      if (at - qualityCandidate.since < QUALITY_HOLD_MS) return;
+      const previous = quality;
+      quality = raw;
+      qualityCandidate = null;
+      // History: a warning is logged when it starts, and when it ends in a normal reading (never on unknown).
+      if (raw === "normal" ? previous !== "unknown" : raw !== "unknown") log("quality", at, { level: raw });
     }
 
     function setStatus(next, at) {
@@ -181,6 +298,7 @@
       lastAt = null;
       lastTracked = null;
       chart = [];
+      resetQuality();
       log("started", at);
       emit();
     }
@@ -200,6 +318,7 @@
       metrics = null;
       lastAt = null;
       chart = [];
+      resetQuality();
       emit();
     }
 
@@ -209,6 +328,7 @@
       resetClosure(at, reason);
       metrics = null;
       lastAt = null;
+      resetQuality(); // no fresh frames: there is nothing current to judge
       if (!paused) status = "waiting";
       emit();
     }
@@ -228,6 +348,8 @@
       if (lastAt !== null && at - lastAt > MAX_GAP_MS) resetClosure(at, "gap");
       if (lastAt !== null && at < lastAt) return snapshot(); // out of order: ignore
       lastAt = at;
+      faces = Number.isFinite(sample.faces) ? sample.faces : null;
+      assessQuality(sample, at);
       if (paused) {
         status = "paused";
         emit();
@@ -291,6 +413,10 @@
         return snapshot();
       }
       setStatus("tracking", at);
+      recal.push({ at, ratio: m.ear / baseline });
+      // Trim here too: while a warning (low light, out of frame) is shown the check below does not run, and an
+      // untrimmed window would grow for as long as the warning lasts.
+      while (recal.length && recal[0].at < at - RECAL_WINDOW_MS) recal.shift();
       collectCalibration(m, at);
       judgeEyes(m, at);
       emit();
@@ -332,6 +458,7 @@
         baseline = value;
         calibrated = true;
         calibrationStatus = "done";
+        recalNeeded = false;
         log("calibrated", at);
         resetClosure(at, "calibrated");
       } else {
@@ -349,6 +476,10 @@
         closedMs,
         mouth: metrics ? metrics.mouth : "unknown",
         head: metrics ? metrics.head : "unknown",
+        // Head pose: the person's own left/right, to the nearest 5 degrees (positive yawDeg = turned left).
+        yawDeg: metrics ? Math.round(metrics.yawDeg / 5) * 5 : null,
+        faces, // detector count of the last frame, null while there is none
+        quality, // unknown | normal | lowLight | outOfFrame | recalibrate
         openness: metrics ? metrics.ear / baseline : null,
         alert: alert && !alert.dismissed ? { closedMs: alert.at - alert.since } : null,
         calibrated,
@@ -399,6 +530,8 @@
         calibrated = false;
         calibrationStatus = "none";
         calibration = null;
+        recal = [];
+        recalNeeded = false;
         emit();
       },
       setSettings(partial) {
@@ -406,6 +539,8 @@
         if (partial.sound !== undefined) settings.sound = Boolean(partial.sound);
         emit();
       },
+      /** Size of the recalibration window (for tests: it must stay bounded). */
+      debugRecalSize: () => recal.length,
       /** Finished sessions (newest first) plus the running one. */
       history() {
         const list = sessions.map((s) => ({ ...s, events: s.events.slice() }));
@@ -466,5 +601,6 @@
   global.alertnessMonitorInternals = {
     MONITOR_LANDMARKS, MONITOR_POINT_INDICES, POINT_COUNT, measure, drawMonitorLandmarks, DEFAULT_BASELINE,
     CLOSE_RATIO, OPEN_RATIO, ALERT_RANGE, MAX_GAP_MS, CALIBRATION_MS,
+    LOW_LIGHT_ENTER, LOW_LIGHT_EXIT, QUALITY_HOLD_MS, EXIT_MS, RECAL_MIN_SPAN_MS, RECAL_HIGH, RECAL_LOW,
   };
 })(typeof window !== "undefined" ? window : globalThis);

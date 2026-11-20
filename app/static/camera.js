@@ -21,6 +21,13 @@
 // - The alertness monitor (monitor.js) gets the landmarks of the very frame that was just processed
 //   (env.onAnalysis) and its overlay is drawn from that same frame; it never changes what is blurred or hidden.
 //
+// - One frame at a time reaches the detector engine: a frame is posted only when the engine has answered the
+//   previous one, so a slow or hung engine can never build a queue of stale frames behind it (a hung engine is
+//   replaced after WORKER_STALL_MS).
+// - The detector runs in a worker ("worker" engine). If a worker cannot be started the controller falls back to
+//   `env.createFallbackWorker()` (the same core on the main thread, "fallback" engine) when the page provides one.
+//   The engine and its status are reported through env.onEngine and stats().
+//
 // The controller takes its browser dependencies as `env`, so tests can drive it with fakes.
 (function (global) {
   const PENDING_TIMEOUT_MS = 1000;
@@ -36,6 +43,14 @@
   // even without canvas filters; a filter softens the blocks where available.
   const BG_REDUCE = { 1: 12, 2: 20, 3: 32 };
   const MASK_ASPECT_TOLERANCE = 0.03;
+  // A frame the engine has not answered for this long (after its deadline) means a hung engine: replace it.
+  const WORKER_STALL_MS = 5000;
+  const LUMA_EVERY_MS = 500; // brightness is sampled at most this often (a 24×24 reduction of the frame)
+  const LUMA_SIZE = 24;
+  const STATS_EVERY_MS = 500; // percentiles are recomputed at most this often
+  // With the camera off the detector engine only holds models in memory: release it after this long (a later start
+  // loads it again, which takes a moment).
+  const WORKER_IDLE_MS = 60000;
 
   /** Pad a detector box by PADDING on each side and clip it to the frame. */
   function boxFor(face, width, height) {
@@ -217,6 +232,14 @@
     let workerReady = null; // Promise, resolved when the detector is loaded
     let detectorUp = false;
     let pendingInit = null;
+    let workerMode = null; // "worker" | "fallback" while an engine exists
+    let workerBroken = false; // a worker could not be started in this page: use the fallback until Restart
+    // The frame the engine has not answered yet (id), and the timer that replaces an engine that never answers.
+    let inWorker = null;
+    let stallTimer = null;
+    let idleTimer = null;
+    // Detector engine for the telemetry: mode "worker" | "fallback" | null, status "off" | "starting" | "active" | "error".
+    let engine = { mode: null, status: "off" };
     let frameId = 0;
     // The one frame in the pipeline, from the start of capture until its result is drawn or dropped:
     // {id, session, frame, copy, capturedAt, timer}. A new frame is captured only when this is null.
@@ -229,7 +252,19 @@
     const foreground = env.makeCanvas();
     const maskCanvas = env.makeCanvas();
     const bgSmall = env.makeCanvas();
-    const perf = { windowStart: 0, windowCount: 0, fps: null, inferMs: [], latencyMs: [], frameSize: null };
+    let lumaCanvas = null; // created on first use (only the monitor needs it)
+    let lumaCache = null; // {at, frame, face}: mean brightness 0–255 of the whole frame and of the largest face
+    let maskImage = null; // reused ImageData for the person mask
+    const perf = {
+      windowStart: 0, windowCount: 0, fps: null, inferMs: [], latencyMs: [], frameSize: null,
+      dropped: 0, pct: null, pctAt: -Infinity,
+    };
+
+    function setEngine(mode, status) {
+      if (engine.mode === mode && engine.status === status) return;
+      engine = { mode, status };
+      if (env.onEngine) env.onEngine({ ...engine });
+    }
 
     function setState(next, info = null) {
       const changed = next !== state || JSON.stringify(info) !== JSON.stringify(stateInfo);
@@ -276,6 +311,8 @@
     function dropJob() {
       if (!job) return;
       env.clearTimeout(job.timer);
+      // Its frame is already inside the engine: from now on the engine must answer within WORKER_STALL_MS.
+      if (inWorker === job.id) armStall();
       if (job.frame) job.frame.close();
       if (job.copy) job.copy.close(); // null once transferred to the worker
       job = null;
@@ -284,17 +321,56 @@
     // ---------- detector worker ----------
     function ensureWorker() {
       if (workerReady) return workerReady;
-      const created = env.createWorker();
+      const ready = new Promise((resolve, reject) => (pendingInit = { resolve, reject }));
+      workerReady = ready;
+      ready.catch(() => {}); // handled by whoever awaits it
+      spawn(workerBroken && env.createFallbackWorker ? "fallback" : "worker");
+      return ready; // spawn() may already have rejected it and cleared workerReady
+    }
+
+    /** Create the engine (`kind`: "worker" or "fallback") and start loading. Failing to create it is handled here. */
+    function spawn(kind) {
+      let created = null;
+      let problem = null;
+      try {
+        created = kind === "fallback" ? env.createFallbackWorker() : env.createWorker();
+      } catch (error) {
+        problem = error;
+      }
+      if (!created) {
+        if (kind === "worker" && env.createFallbackWorker) {
+          workerBroken = true;
+          spawn("fallback"); // no worker in this browser or page: run the detector on the main thread instead
+          return;
+        }
+        const pending = pendingInit;
+        resetWorker(); // forgets this attempt, so the next start tries again
+        setEngine(kind, "error");
+        if (pending) pending.reject(Object.assign(new Error("engine unavailable"), { name: errorName(problem), stage: "worker" }));
+        return;
+      }
       worker = created;
-      workerReady = new Promise((resolve, reject) => (pendingInit = { resolve, reject }));
-      workerReady.catch(() => {}); // handled by whoever awaits it
+      workerMode = kind;
+      setEngine(kind, "starting");
       // Messages from a worker that has since been replaced (restart) are ignored entirely.
       created.onmessage = (event) => worker === created && onWorkerMessage(event.data);
       created.onerror = (event) => worker === created && onWorkerFailure(event && event.message);
       created.postMessage({ type: "init" });
       if (settings.glasses || settings.monitor) requestLandmarker();
       if (settings.background !== "off") requestSegmenter();
-      return workerReady;
+    }
+
+    /** The worker crashed before the detector was loaded: try the main-thread fallback once, keeping the same init promise. */
+    function switchToFallback() {
+      if (worker) worker.terminate();
+      worker = null;
+      detectorUp = false;
+      inWorker = null;
+      disarmStall();
+      workerBroken = true;
+      if (landmarker !== "off") setLandmarker("off");
+      if (segmenter !== "off") setSegmenter("off");
+      spawn("fallback");
     }
 
     function setSegmenter(next, message = null) {
@@ -352,16 +428,37 @@
     function resetWorker() {
       if (worker) worker.terminate();
       worker = null;
+      workerMode = null;
       workerReady = null;
       detectorUp = false;
       pendingInit = null;
+      inWorker = null; // a new engine has nothing queued
+      disarmStall();
+      disarmIdleRelease();
+      if (engine.status !== "off") setEngine(engine.mode, "off");
       if (landmarker !== "off") setLandmarker("off"); // a new worker loads it again
       if (segmenter !== "off") setSegmenter("off");
     }
 
     function onWorkerMessage(msg) {
+      // Every detect gets one answer (result or detect error): the engine is free again, however late the answer
+      // is. A late answer is dropped below, but it lets the loop capture its next frame.
+      const answered = (msg.type === "result" || (msg.type === "error" && msg.stage === "detect")) && inWorker !== null && msg.frameId === inWorker;
+      if (answered) {
+        inWorker = null;
+        disarmStall();
+      }
+      try {
+        dispatchWorkerMessage(msg);
+      } finally {
+        if (answered && !job && state !== "error") schedule(); // a stale answer: nothing else will wake the loop
+      }
+    }
+
+    function dispatchWorkerMessage(msg) {
       if (msg.type === "ready") {
         detectorUp = true;
+        setEngine(workerMode, "active");
         if (pendingInit) pendingInit.resolve(msg.initMs);
         pendingInit = null;
       } else if (msg.type === "landmarker-ready") {
@@ -378,6 +475,8 @@
       } else if (msg.type === "landmarker-error") {
         effectFailed(msg.message);
       } else if (msg.type === "result") {
+        // A result proves the engine works (an earlier transient detect error left the status at "error").
+        if (detectorUp && workerMode && engine.status !== "active") setEngine(workerMode, "active");
         onResult(msg);
       } else if (msg.type === "error") {
         if (msg.stage === "init") {
@@ -391,11 +490,59 @@
     }
 
     function onWorkerFailure(message) {
+      // A worker that cannot even start (blocked module worker, old browser): same detector on the main thread.
+      if (pendingInit && workerMode === "worker" && env.createFallbackWorker) {
+        switchToFallback();
+        return;
+      }
       // stage: a crash while the detector loads is still reported as a worker failure, not as a load failure.
       if (pendingInit) pendingInit.reject(Object.assign(new Error(message || "worker error"), { name: "WorkerError", stage: "worker" }));
       pendingInit = null;
+      const mode = workerMode;
       resetWorker();
+      setEngine(mode, "error");
       if (stream) fail("worker", "WorkerError");
+    }
+
+    function armStall() {
+      if (stallTimer !== null || inWorker === null) return;
+      const watched = inWorker;
+      const watchedWorker = worker;
+      stallTimer = env.setTimeout(() => {
+        stallTimer = null;
+        if (inWorker !== watched || worker !== watchedWorker) return; // it answered, or was replaced
+        onWorkerStalled();
+      }, WORKER_STALL_MS);
+    }
+
+    function disarmStall() {
+      if (stallTimer !== null) env.clearTimeout(stallTimer);
+      stallTimer = null;
+    }
+
+    /** No camera and no start in progress: let go of the engine after WORKER_IDLE_MS. */
+    function armIdleRelease() {
+      disarmIdleRelease();
+      if (!worker) return;
+      idleTimer = env.setTimeout(() => {
+        idleTimer = null;
+        if (!stream && state !== "prompt" && state !== "loading") resetWorker();
+      }, WORKER_IDLE_MS);
+    }
+
+    function disarmIdleRelease() {
+      if (idleTimer !== null) env.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+
+    /** The engine never answered a frame: stop it (a hung worker is terminated). With the camera on this is an error. */
+    function onWorkerStalled() {
+      const mode = workerMode;
+      resetWorker();
+      if (stream) {
+        setEngine(mode, "error");
+        fail("worker", "WorkerStalled");
+      }
     }
 
     // ---------- camera ----------
@@ -406,6 +553,9 @@
         return;
       }
       const id = ++camSession;
+      disarmIdleRelease();
+      // Reuse a warm engine only if it finished processing the last session's frame.
+      if (inWorker !== null) resetWorker();
       setState("prompt");
       const ready = ensureWorker();
 
@@ -419,6 +569,7 @@
         if (id === camSession) {
           const next = errorState(error);
           setState(next, next === "error" ? { kind: "camera", name: errorName(error) } : { name: error && error.name });
+          armIdleRelease(); // no camera: the engine started for it is not needed
         }
         return;
       }
@@ -465,7 +616,7 @@
       disarmFreshness();
       if (frameHandle !== null) env.cancelFrame(frameHandle);
       frameHandle = null;
-      dropJob();
+      dropJob(); // keep watching any transferred frame until the engine answers or is terminated
       if (stream) stopTracks(stream);
       stream = null;
       if (env.video.pause) env.video.pause();
@@ -474,7 +625,14 @@
       perf.windowStart = 0;
       perf.windowCount = 0;
       perf.fps = null;
+      perf.inferMs.length = 0;
+      perf.latencyMs.length = 0;
+      perf.frameSize = null;
+      perf.dropped = 0;
+      perf.pct = null;
+      lumaCache = null;
       setState("idle", reason ? { reason } : null);
+      armIdleRelease();
     }
 
     /** Why the detector never became ready: the worker itself crashed, or the detector failed to load / timed out. */
@@ -484,6 +642,7 @@
 
     /** kind: the stage that failed (load, detector, worker, render); name: the error's class name. */
     function fail(kind, name = "Error") {
+      if (kind === "detector" || kind === "load" || kind === "worker") setEngine(workerMode || engine.mode || "worker", "error");
       disarmFreshness();
       if (frameHandle !== null) env.cancelFrame(frameHandle);
       frameHandle = null;
@@ -493,6 +652,7 @@
     }
 
     function restartDetector() {
+      workerBroken = false; // an explicit retry tries the worker first again
       resetWorker();
       clearView();
       if (!stream) return start();
@@ -516,6 +676,8 @@
     function tick() {
       frameHandle = null;
       if (!stream || job || !detectorUp || state === "error") return;
+      // The engine still holds an earlier frame: wait for its answer (onWorkerMessage wakes the loop).
+      if (inWorker !== null) return;
       if (env.video.readyState < 2) {
         schedule();
         return;
@@ -555,18 +717,38 @@
         }
         return;
       }
-      worker.postMessage(
-        {
-          type: "detect", session: current.session, frameId: current.id, bitmap: current.copy,
-          timestamp: env.now(), landmarks: current.landmarks, segment: current.segment,
-        },
-        [current.copy],
-      );
+      if (!worker || !detectorUp) {
+        // The engine was replaced (and is still loading) while this frame was being captured: nowhere to send it.
+        dropJob();
+        schedule();
+        return;
+      }
+      // Set before posting: an engine that answers inside postMessage must find the frame already registered.
+      inWorker = current.id;
+      try {
+        worker.postMessage(
+          {
+            type: "detect", session: current.session, frameId: current.id, bitmap: current.copy,
+            timestamp: env.now(), landmarks: current.landmarks, segment: current.segment,
+          },
+          [current.copy],
+        );
+      } catch (error) {
+        // e.g. DataCloneError: nothing was sent (dropJob closes both bitmaps) and the engine cannot take frames.
+        inWorker = null;
+        if (live()) {
+          dropJob();
+          resetWorker();
+          fail("worker", errorName(error));
+        }
+        return;
+      }
       current.copy = null; // transferred: the worker closes it
     }
 
     function onDeadline(current) {
       if (job !== current) return;
+      perf.dropped++;
       dropJob(); // this frame is now stale: its result will be ignored when it arrives
       // Fail closed whenever something must be hidden: faces (blur) or the real background (background on).
       if (settings.blurOn || settings.background !== "off") {
@@ -574,6 +756,7 @@
         setState("hidden", { why: "timeout" });
       }
       schedule(); // recover with the next new frame
+      reportStats();
     }
 
     function onResult(msg) {
@@ -592,6 +775,9 @@
       const marks = current.landmarks && Array.isArray(msg.marks) && !msg.landmarksError ? msg.marks : null;
       const overlayMarks = settings.monitor && settings.showLandmarks ? marks : null;
       let shown = false; // whether this frame reached the screen
+      current.frameW = current.frame.width;
+      current.frameH = current.frame.height;
+      if (current.monitor && settings.monitor) sampleLuma(current, faces);
       try {
         // A runtime segmentation failure for this very frame (session and frameId already matched above):
         // the segmenter is now in error; the frame is hidden below and Retry recreates the segmenter.
@@ -617,20 +803,76 @@
       } finally {
         current.frame.close();
       }
-      if (current.monitor && settings.monitor) analyse(current, faces, marks, msg.landmarksError, shown);
+      if (current.monitor && settings.monitor) analyse(current, faces, marks, msg.landmarksError, shown, lumaOf(current));
       record(msg.inferMs, env.now() - current.capturedAt);
       schedule();
     }
 
     /** Hand this frame's monitor input to the page. A failure there must never stop the camera pipeline. */
-    function analyse(current, faces, marks, landmarksError, shown) {
+    function analyse(current, faces, marks, landmarksError, shown, luma) {
       if (!env.onAnalysis) return;
       const error = landmarksError || (current.landmarks ? null : landmarker === "error" ? "landmarker" : null);
       try {
-        env.onAnalysis({ at: current.capturedAt, faces: faces.length, marks, error: error ? String(error) : null, shown });
+        env.onAnalysis({
+          at: current.capturedAt, faces: faces.length, marks, error: error ? String(error) : null, shown,
+          // Raw detector boxes and the frame size (frame-quality cues), and the brightness sampled from this frame.
+          boxes: faces.map((f) => ({ x: f.x, y: f.y, w: f.w, h: f.h })), frame: { w: current.frameW, h: current.frameH }, luma,
+        });
       } catch (err) {
         if (global.console) global.console.error(err);
       }
+    }
+
+    /**
+     * Brightness cue for the frame-quality status: the mean luma (0–255) of a LUMA_SIZE² reduction of the whole frame
+     * and of the largest detected face. Sampled at most every LUMA_EVERY_MS. Only two numbers are kept: the reduced
+     * image is wiped right away and never shown, stored or sent. A failure just means "no brightness reading".
+     */
+    function sampleLuma(current, faces) {
+      const now = env.now();
+      if (lumaCache && now - lumaCache.at < LUMA_EVERY_MS) return;
+      let reading = { at: now, frame: null, face: null };
+      try {
+        if (!lumaCanvas) {
+          lumaCanvas = env.makeCanvas();
+          lumaCanvas.width = LUMA_SIZE;
+          lumaCanvas.height = LUMA_SIZE;
+        }
+        const frame = current.frame;
+        reading.frame = meanLuma(frame, 0, 0, frame.width, frame.height);
+        const largest = faces.reduce((best, f) => (!best || f.w * f.h > best.w * best.h ? f : best), null);
+        if (largest) {
+          const x0 = Math.max(0, Math.floor(largest.x));
+          const y0 = Math.max(0, Math.floor(largest.y));
+          const x1 = Math.min(frame.width, Math.ceil(largest.x + largest.w));
+          const y1 = Math.min(frame.height, Math.ceil(largest.y + largest.h));
+          if (x1 - x0 >= 8 && y1 - y0 >= 8) reading.face = meanLuma(frame, x0, y0, x1 - x0, y1 - y0);
+        }
+      } catch (_) {
+        reading = { at: now, frame: null, face: null };
+      }
+      lumaCache = reading;
+    }
+
+    function meanLuma(frame, sx, sy, sw, sh) {
+      const ctx = lumaCanvas.getContext("2d", { willReadFrequently: true });
+      let image;
+      try {
+        ctx.drawImage(frame, sx, sy, sw, sh, 0, 0, LUMA_SIZE, LUMA_SIZE);
+        image = ctx.getImageData(0, 0, LUMA_SIZE, LUMA_SIZE);
+      } finally {
+        ctx.clearRect(0, 0, LUMA_SIZE, LUMA_SIZE);
+      }
+      const data = image && image.data;
+      if (!data || data.length < 4) return null;
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      return sum / (data.length / 4);
+    }
+
+    /** The latest brightness reading for the monitor (null until the first one). */
+    function lumaOf() {
+      return lumaCache ? { frame: lumaCache.frame, face: lumaCache.face } : null;
     }
 
     /** Draw one processed frame. Returns false (and leaves every canvas cleared) if it must not be shown. */
@@ -718,9 +960,13 @@
       maskCanvas.width = mask.width;
       maskCanvas.height = mask.height;
       const mctx = maskCanvas.getContext("2d");
-      const image = mctx.createImageData(mask.width, mask.height);
-      for (let i = 0; i < mask.alpha.length; i++) image.data[i * 4 + 3] = mask.alpha[i];
-      mctx.putImageData(image, 0, 0);
+      // One ImageData is reused while the mask size stays the same (a new one per frame is needless garbage).
+      // Its colour channels stay 0: only alpha is written, which is all the destination-in step needs.
+      if (!maskImage || maskImage.width !== mask.width || maskImage.height !== mask.height) {
+        maskImage = mctx.createImageData(mask.width, mask.height);
+      }
+      for (let i = 0; i < mask.alpha.length; i++) maskImage.data[i * 4 + 3] = mask.alpha[i];
+      mctx.putImageData(maskImage, 0, 0);
       foreground.width = width;
       foreground.height = height;
       const fctx = foreground.getContext("2d");
@@ -799,19 +1045,42 @@
       perf.latencyMs.push(latencyMs);
       if (perf.inferMs.length > 600) perf.inferMs.shift();
       if (perf.latencyMs.length > 600) perf.latencyMs.shift();
-      if (env.onStats) env.onStats(stats());
+      reportStats();
+    }
+
+    /** A failure in the telemetry UI must leave the camera loop running. */
+    function reportStats() {
+      try {
+        if (env.onStats) env.onStats(stats());
+      } catch (err) {
+        if (global.console) global.console.error(err);
+      }
+    }
+
+    /** Percentiles sort two arrays of up to 600 values: refresh them twice a second, not on every frame. */
+    function percentiles() {
+      const now = env.now();
+      if (!perf.pct || now - perf.pctAt >= STATS_EVERY_MS) {
+        perf.pct = {
+          inferP50: percentile(perf.inferMs, 50),
+          inferP95: percentile(perf.inferMs, 95),
+          latencyP50: percentile(perf.latencyMs, 50),
+          latencyP95: percentile(perf.latencyMs, 95),
+        };
+        perf.pctAt = now;
+      }
+      return perf.pct;
     }
 
     function stats() {
       return {
         fps: perf.fps,
         latencyMs: perf.latencyMs.at(-1) ?? null,
-        inferP50: percentile(perf.inferMs, 50),
-        inferP95: percentile(perf.inferMs, 95),
-        latencyP50: percentile(perf.latencyMs, 50),
-        latencyP95: percentile(perf.latencyMs, 95),
+        ...percentiles(),
         samples: perf.latencyMs.length,
         frameSize: perf.frameSize,
+        dropped: perf.dropped, // frames that missed their deadline since the camera started
+        engine: { ...engine },
       };
     }
 
@@ -889,6 +1158,11 @@
       dispose() {
         stop();
         setBackgroundImage(null);
+        resetWorker(); // the worker holds the models in memory: release it with the page
+      },
+      /** Detector engine for the telemetry: {mode: "worker" | "fallback" | null, status: "off" | "starting" | "active" | "error"}. */
+      get engine() {
+        return { ...engine };
       },
       get effect() {
         return landmarker;

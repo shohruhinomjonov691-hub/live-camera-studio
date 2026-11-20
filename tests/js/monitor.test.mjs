@@ -8,7 +8,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const SOURCE = readFileSync(new URL("../../app/static/monitor.js", import.meta.url), "utf8");
-const WORKER = readFileSync(new URL("../../app/static/detector-worker.mjs", import.meta.url), "utf8");
+const WORKER = readFileSync(new URL("../../app/static/detector-core.mjs", import.meta.url), "utf8");
 
 function load() {
   const context = { console };
@@ -327,4 +327,232 @@ test("[r-p3] a hidden preview wins over missing landmarks; availability is check
   assert.equal(s.status, "waiting");
   s = m.update({ at: 1100, faces: 0, marks: null, error: null, shown: false });
   assert.equal(s.status, "noface", "no face wins over a hidden preview");
+});
+
+// ---------- Head pose, face count and frame-quality status ----------
+// Synthetic geometry again: these tests prove the rules (thresholds, holds, resets), not accuracy on real faces.
+
+const FRAME = { w: 640, h: 480 };
+const CENTRE_BOX = { x: 220, y: 110, w: 200, h: 260 };
+const sampleWith = (extra = {}, opts = {}) => () => ({
+  faces: 1, marks: [face(opts)], error: null, boxes: [CENTRE_BOX], frame: FRAME, luma: { frame: 120, face: 120 }, ...extra,
+});
+const quality = (m) => m.snapshot().quality;
+const qualityEvents = (m) => plain(m.snapshot().session.events.filter((e) => e.type === "quality").map((e) => e.detail.level));
+
+test("[pose] a left or right turn reports its direction (the person's own side) and a rounded angle; up/down are directions only", () => {
+  const { m } = monitor();
+  let s = feed(m, 0, 300, one({ yaw: 0.5 }));
+  assert.equal(s.head, "centered");
+  assert.ok(Math.abs(s.yawDeg) <= 5);
+  // Nose nearer the image-right cheek (yaw > 0.5): the person turned to their left. asin(0.6) = 37°, shown as 35.
+  s = feed(m, 350, 700, one({ yaw: 0.8 }));
+  assert.equal(s.head, "turned");
+  assert.equal(s.yawDeg, 35);
+  // Nose nearer the image-left cheek: turned to the person's right.
+  s = feed(m, 750, 1100, one({ yaw: 0.2 }));
+  assert.equal(s.head, "turned");
+  assert.equal(s.yawDeg, -35);
+  s = feed(m, 1150, 1500, one({ pitch: 0.7 }));
+  assert.equal(s.head, "down");
+  s = feed(m, 1550, 1900, one({ pitch: 0.1 }));
+  assert.equal(s.head, "up");
+  assert.equal(m.snapshot().faces, 1);
+});
+
+test("[pose] the head classification itself is unchanged by the angle (same thresholds as before)", () => {
+  assert.equal(I.measure(face({ yaw: 0.29 })).head, "turned");
+  assert.equal(I.measure(face({ yaw: 0.31 })).head, "centered");
+  assert.equal(I.measure(face({ yaw: 0.71 })).head, "turned");
+  // 0.7 / 0.3 correspond to about 24 degrees; the angle at the limit
+  assert.ok(Math.abs(I.measure(face({ yaw: 0.7 })).yawDeg - 23.58) < 0.1);
+});
+
+test("[faces] the face count follows the detector for none, one and several faces, also when landmarks are missing", () => {
+  const { m } = monitor();
+  assert.equal(feed(m, 0, 100, () => ({ faces: 0, marks: [], error: null })).faces, 0);
+  assert.equal(feed(m, 150, 300, one()).faces, 1);
+  assert.equal(feed(m, 350, 500, () => ({ faces: 3, marks: [face(), face(), face()], error: null })).faces, 3);
+  assert.equal(feed(m, 550, 700, () => ({ faces: 2, marks: null, error: "landmarker" })).faces, 2);
+  assert.equal(m.snapshot().head, "unknown", "no head reading without exactly one measured face");
+});
+
+test("[quality] normal with a face in view and nothing to warn about; unknown when there is no face to judge", () => {
+  const { m } = monitor();
+  assert.equal(quality(m), "unknown");
+  feed(m, 0, 1500, sampleWith());
+  assert.equal(quality(m), "normal");
+  feed(m, 1550, 4000, () => ({ faces: 0, marks: [], error: null, boxes: [], frame: FRAME, luma: { frame: 120, face: null } }));
+  assert.equal(quality(m), "unknown", "no face: not judged (and not 'Normal')");
+  assert.deepEqual(qualityEvents(m), [], "unknown -> normal and normal -> unknown are not logged");
+});
+
+test("[quality] low light needs a held reading, has hysteresis and is logged once each way", () => {
+  const { m } = monitor();
+  feed(m, 0, 1500, sampleWith());
+  assert.equal(quality(m), "normal");
+  feed(m, 1550, 2500, sampleWith({ luma: { frame: 30, face: 30 } }));
+  assert.equal(quality(m), "normal", "less than the hold time: not shown yet");
+  feed(m, 2550, 2600, sampleWith({ luma: { frame: 30, face: 30 } }));
+  assert.equal(quality(m), "lowLight");
+  // 60 is above "enter" (55) but below "exit" (70): still dark
+  feed(m, 2650, 5000, sampleWith({ luma: { frame: 60, face: 60 } }));
+  assert.equal(quality(m), "lowLight", "hysteresis keeps the warning");
+  feed(m, 5050, 7000, sampleWith({ luma: { frame: 110, face: 110 } }));
+  assert.equal(quality(m), "normal");
+  assert.deepEqual(qualityEvents(m), ["lowLight", "normal"]);
+  // 60 from normal never starts a warning
+  feed(m, 7050, 10000, sampleWith({ luma: { frame: 60, face: 60 } }));
+  assert.equal(quality(m), "normal");
+});
+
+test("[quality] low light is judged on the face when there is one, otherwise on the frame; no reading means no warning", () => {
+  const { m } = monitor();
+  feed(m, 0, 2000, sampleWith({ luma: { frame: 200, face: 30 } })); // dark face against a bright background
+  assert.equal(quality(m), "lowLight");
+  const none = monitor().m;
+  feed(none, 0, 3000, sampleWith({ luma: null }));
+  assert.equal(quality(none), "normal", "no brightness reading: nothing is invented");
+  const bare = monitor().m;
+  feed(bare, 0, 2000, () => ({ faces: 0, marks: [], error: null, luma: { frame: 20, face: null } }));
+  assert.equal(quality(bare), "lowLight", "a dark frame with no face is still a light problem");
+});
+
+test("[quality] a face cut by the frame, or touching its edge, is Out of Frame / Partial", () => {
+  const cut = monitor().m;
+  feed(cut, 0, 2000, sampleWith({ boxes: [{ x: -90, y: 110, w: 200, h: 260 }] })); // 45 % outside
+  assert.equal(quality(cut), "outOfFrame");
+  const touching = monitor().m;
+  feed(touching, 0, 2000, sampleWith({ boxes: [{ x: 0, y: 110, w: 200, h: 260 }] }));
+  assert.equal(quality(touching), "outOfFrame");
+  const bottom = monitor().m;
+  feed(bottom, 0, 2000, sampleWith({ boxes: [{ x: 200, y: 300, w: 200, h: 180 }] }));
+  assert.equal(quality(bottom), "outOfFrame");
+  const inside = monitor().m;
+  feed(inside, 0, 2000, sampleWith({ boxes: [{ x: 30, y: 110, w: 200, h: 260 }] }));
+  assert.equal(quality(inside), "normal", "near an edge but fully inside");
+  // moving back to the middle clears it after the hold time
+  feed(cut, 2050, 4000, sampleWith());
+  assert.equal(quality(cut), "normal");
+  assert.deepEqual(qualityEvents(cut), ["outOfFrame", "normal"]);
+});
+
+test("[quality] a face that vanishes next to an edge left the frame; one that vanishes mid-frame did not", () => {
+  const edge = monitor().m;
+  feed(edge, 0, 2000, sampleWith({ boxes: [{ x: 30, y: 110, w: 200, h: 260 }] }));
+  assert.equal(quality(edge), "normal");
+  feed(edge, 2050, 3500, () => ({ faces: 0, marks: [], error: null, boxes: [], frame: FRAME, luma: { frame: 120, face: null } }));
+  assert.equal(quality(edge), "outOfFrame");
+  // after EXIT_MS it is just "no face" again
+  feed(edge, 3550, 6500, () => ({ faces: 0, marks: [], error: null, boxes: [], frame: FRAME, luma: { frame: 120, face: null } }));
+  assert.equal(quality(edge), "unknown");
+
+  const middle = monitor().m;
+  feed(middle, 0, 2000, sampleWith());
+  const seen = new Set();
+  for (let at = 2050; at <= 5000; at += 50) {
+    middle.update({ at, faces: 0, marks: [], error: null, boxes: [], frame: FRAME, luma: { frame: 120, face: null } });
+    seen.add(quality(middle));
+  }
+  assert.ok(!seen.has("outOfFrame"));
+});
+
+test("[quality] malformed boxes or frame sizes are ignored, never turned into a warning", () => {
+  const { m } = monitor();
+  feed(m, 0, 2500, sampleWith({ boxes: [{ x: NaN, y: 0, w: 10, h: 10 }, null, { x: 0, y: 0, w: 0, h: 5 }] })); // valid frame size
+  assert.equal(quality(m), "normal", "unusable boxes are skipped (they would all read as touching the edge)");
+  const noFrame = monitor().m;
+  feed(noFrame, 0, 2500, sampleWith({ frame: { w: 0, h: 0 }, boxes: [{ x: 0, y: 0, w: 50, h: 50 }] }));
+  assert.equal(quality(noFrame), "normal", "an unusable frame size is ignored")
+});
+
+test("[quality] Recalibration Needed: open-eye readings persistently far from the baseline", () => {
+  const high = monitor().m;
+  feed(high, 0, 7000, sampleWith({}, { ear: 0.45 })); // 1.5 x the baseline
+  assert.equal(quality(high), "normal", "less than the minimum stretch of readings");
+  feed(high, 7050, 11000, sampleWith({}, { ear: 0.45 }));
+  assert.equal(quality(high), "recalibrate");
+
+  const edge = monitor().m;
+  feed(edge, 0, 11000, sampleWith({}, { ear: 0.21 })); // 0.7 x: "open" but next to the closing limit
+  assert.equal(quality(edge), "recalibrate");
+  assert.equal(edge.snapshot().eyes, "open");
+
+  const fine = monitor().m;
+  feed(fine, 0, 12000, sampleWith({}, { ear: 0.3 }));
+  assert.equal(quality(fine), "normal");
+  assert.deepEqual(qualityEvents(fine), []);
+});
+
+test("[quality] recalibration advice goes away after a successful calibration; a failed calibration asks for another", () => {
+  const { m } = monitor();
+  m.startSession(0);
+  feed(m, 0, 11000, sampleWith({}, { ear: 0.45 }));
+  assert.equal(quality(m), "recalibrate");
+  m.calibrate(11050);
+  feed(m, 11050, 14100, sampleWith({}, { ear: 0.45 }));
+  assert.equal(m.snapshot().calibration, "done");
+  feed(m, 14150, 16500, sampleWith({}, { ear: 0.45 }));
+  assert.equal(quality(m), "normal", "0.45 is now the baseline");
+
+  const bad = monitor().m;
+  bad.startSession(0);
+  bad.calibrate(0);
+  feed(bad, 0, 3050, sampleWith({}, { ear: 0.6 }));
+  assert.equal(bad.snapshot().calibration, "failed");
+  feed(bad, 3100, 5000, sampleWith({}));
+  assert.equal(quality(bad), "recalibrate");
+  bad.resetCalibration();
+  feed(bad, 5050, 7000, sampleWith({}));
+  assert.equal(quality(bad), "normal");
+});
+
+test("[quality] a closure episode, a turned head or lost tracking never count towards recalibration", () => {
+  const { m } = monitor();
+  // eyes closed for the whole stretch (ratio 0.3 x): that is an alert, not a miscalibration
+  feed(m, 0, 11000, sampleWith({}, { ear: 0.09 }));
+  assert.equal(quality(m), "normal");
+  const turned = monitor().m;
+  feed(turned, 0, 11000, sampleWith({}, { ear: 0.45, yaw: 0.9 }));
+  assert.equal(quality(turned), "normal", "a turned head changes the eye shape: not judged");
+});
+
+test("[quality] interrupt, pause and the end of a session reset the quality status", () => {
+  const { m } = monitor();
+  feed(m, 0, 2000, sampleWith({ luma: { frame: 20, face: 20 } }));
+  assert.equal(quality(m), "lowLight");
+  m.interrupt(2050, "stale");
+  assert.equal(quality(m), "unknown");
+  assert.equal(m.snapshot().faces, null);
+  feed(m, 2100, 4200, sampleWith({ luma: { frame: 20, face: 20 } }));
+  assert.equal(quality(m), "lowLight");
+  m.endSession(4300);
+  assert.equal(quality(m), "unknown");
+  feed(m, 5000, 7000, sampleWith({ luma: { frame: 120, face: 120 } }));
+  assert.equal(quality(m), "normal", "a new session starts clean (no old low-light state)");
+});
+
+test("[r1] the recalibration window stays bounded while a quality warning is shown", () => {
+  const { m } = monitor();
+  // A dark room for ten minutes at 20 fps: tracked, centered frames the whole time.
+  feed(m, 0, 600000, sampleWith({ luma: { frame: 20, face: 20 } }), 50);
+  assert.equal(quality(m), "lowLight");
+  assert.ok(m.debugRecalSize() <= (12000 / 50) + 2, `window holds ${m.debugRecalSize()} entries`);
+});
+
+test("[r2] flapping quality changes never push out 'started' or a cue from a full event list", () => {
+  const { m } = monitor({ alertAfterMs: 1000 });
+  m.startSession(0);
+  // a closure episode that raises a cue ...
+  feed(m, 0, 1500, sampleWith({}, { ear: 0.05 }));
+  // ... then light flapping around the thresholds for a long time
+  let at = 1550;
+  for (let i = 0; i < 400; i++) {
+    const luma = i % 2 ? 120 : 20;
+    for (let k = 0; k < 25; k++, at += 50) m.update({ at, ...sampleWith({ luma: { frame: luma, face: luma } }, {})() });
+  }
+  const events = m.snapshot().session.events;
+  assert.ok(events.length <= 200);
+  assert.equal(events[0].type, "started", "the start of the session is kept");
+  assert.ok(events.some((e) => e.type === "alert"), "the cue is kept");
 });

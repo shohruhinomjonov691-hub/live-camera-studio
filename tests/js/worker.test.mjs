@@ -1,18 +1,20 @@
-// The detector worker (app/static/detector-worker.mjs) with MediaPipe replaced by fakes that consume and clear
-// self.ModuleFactory the way the vendored bundle does. Run: node --test tests/js/*.test.mjs
+// The detector worker (app/static/detector-worker.mjs + detector-core.mjs) with MediaPipe replaced by fakes that
+// consume and clear self.ModuleFactory the way the vendored bundle does. Run: node --test tests/js/*.test.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const SOURCE = readFileSync(new URL("../../app/static/detector-worker.mjs", import.meta.url), "utf8");
+const CORE = readFileSync(new URL("../../app/static/detector-core.mjs", import.meta.url), "utf8");
+const WORKER = readFileSync(new URL("../../app/static/detector-worker.mjs", import.meta.url), "utf8");
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function loadWorker({ failLandmarker = false, maskValues = null, offscreen = true, iosChromeUA = false, brokenLandmarkers = 0 } = {}) {
+function loadWorker({ failLandmarker = false, maskValues = null, offscreen = true, iosChromeUA = false, brokenLandmarkers = 0, mainThread = false } = {}) {
   const posted = [];
   const created = [];
   const options = [];
+  const fileArgs = [];
   const context = { console, performance, posted, transfers: [] };
   if (offscreen) {
     context.OffscreenCanvas = class OffscreenCanvas {
@@ -22,6 +24,7 @@ function loadWorker({ failLandmarker = false, maskValues = null, offscreen = tru
     };
   }
   context.self = context;
+  if (mainThread) context.document = {}; // a page has a document, a worker does not
   context.postMessage = (msg, transfer) => {
     posted.push(msg);
     context.transfers.push(transfer || []);
@@ -32,6 +35,7 @@ function loadWorker({ failLandmarker = false, maskValues = null, offscreen = tru
   const task = (kind) => ({
     async createFromOptions(files, taskOptions) {
       options.push([kind, taskOptions]);
+      fileArgs.push(files);
       await tick();
       // Like the bundle on Chrome for iOS (UA without "Version/"): no canvas given -> document.createElement,
       // which does not exist in a worker.
@@ -66,17 +70,23 @@ function loadWorker({ failLandmarker = false, maskValues = null, offscreen = tru
     FaceDetector: task("detector"),
     FaceLandmarker: task("landmarker"),
     ImageSegmenter: task("segmenter"),
-    FilesetResolver: { forVisionTasks: async () => ({}) },
+    FilesetResolver: { forVisionTasks: async () => ({ wasmLoaderPath: "loader.js", wasmBinaryPath: "module.wasm" }) },
     ModuleFactory: function ModuleFactory() {},
   };
-  const code = SOURCE
+  // The core's imports become the fakes; the worker's import of the core becomes the core's own code, which is
+  // run in the same script (its `export` keyword is dropped).
+  const core = CORE
     .replace(/^import \{([^}]+)\} from "[^"]+";$/m, "const {$1} = __mp;")
-    .replace(/^import ModuleFactory from "[^"]+";$/m, "const ModuleFactory = __mp.ModuleFactory;");
+    .replace(/^import ModuleFactory from "[^"]+";$/m, "const ModuleFactory = __mp.ModuleFactory;")
+    .replace(/^export function /m, "function ");
+  const worker = WORKER.replace(/^import \{ createDetectorCore \} from "[^"]+";$/m, "");
+  const code = `${core}\n${worker}`;
   assert.ok(!/^import /m.test(code), "all imports replaced");
+  assert.ok(!/^export /m.test(code), "no export left");
   vm.createContext(context);
   vm.runInContext(code, context);
   const send = (data) => context.onmessage({ data });
-  return { posted, created, closed, send, context, options };
+  return { posted, created, closed, send, context, options, fileArgs };
 }
 
 async function settle() {
@@ -248,4 +258,111 @@ test("[r-mon] Retry (recreate) closes a runtime-broken landmarker, builds a new 
   result = w.posted.filter((m) => m.type === "result").at(-1);
   assert.equal(result.landmarksError, null, "the next frame succeeds with the new instance");
   assert.equal(result.marks.length, 1);
+});
+
+// ---------- Every frame gets exactly one answer; the core can be disposed (main-thread fallback) ----------
+
+test("[q] a frame sent before the detector exists is closed and answered with an error carrying its frame id", () => {
+  const w = loadWorker();
+  const bitmap = { width: 10, height: 10, closed: false, close() { this.closed = true; } };
+  w.send({ type: "detect", session: 4, frameId: 12, bitmap, timestamp: 1 });
+  const error = w.posted.find((m) => m.type === "error");
+  assert.equal(error.stage, "detect");
+  assert.equal(error.frameId, 12);
+  assert.equal(error.session, 4);
+  assert.equal(bitmap.closed, true);
+  assert.equal(w.posted.length, 1, "exactly one answer");
+});
+
+test("[q] a detector that throws still answers the frame once, with the error class, and closes the bitmap", async () => {
+  const w = loadWorker();
+  w.send({ type: "init" });
+  await settle();
+  const bitmap = { width: 10, height: 10, closed: false, close() { this.closed = true; } };
+  w.context.performance = { now: () => { throw new TypeError("clock broke"); } }; // makes detect() throw
+  w.send({ type: "detect", session: 1, frameId: 3, bitmap, timestamp: 1 });
+  const answers = w.posted.filter((m) => m.type === "result" || m.type === "error");
+  assert.equal(answers.length, 1);
+  assert.equal(answers[0].type, "error");
+  assert.equal(answers[0].name, "TypeError");
+  assert.equal(answers[0].frameId, 3);
+  assert.equal(bitmap.closed, true);
+});
+
+test("[fb] dispose closes every task; later frames are closed without an answer; two cores are independent", async () => {
+  const w = loadWorker();
+  w.send({ type: "init" });
+  w.send({ type: "init-landmarker" });
+  w.send({ type: "init-segmenter" });
+  await settle();
+  const second = [];
+  const other = w.context.createDetectorCore((message) => second.push(message));
+  other.dispose(); // disposing an unused core does nothing to the first
+  const bitmap = () => ({ width: 100, height: 100, closed: false, close() { this.closed = true; } });
+  const ok = bitmap();
+  w.send({ type: "detect", session: 1, frameId: 1, bitmap: ok, timestamp: 1, landmarks: true });
+  assert.equal(w.posted.at(-1).type, "result");
+
+  // The core is reachable through the worker's own instance only via messages, so dispose it through a fresh one.
+  const before = w.posted.length;
+  const mine = [];
+  const core = w.context.createDetectorCore((message) => mine.push(message));
+  await core.handle({ type: "init" });
+  await core.handle({ type: "init-landmarker" });
+  assert.deepEqual(mine.map((m) => m.type), ["ready", "landmarker-ready"]);
+  const closedBefore = w.closed.length;
+  core.dispose();
+  assert.equal(w.closed.length - closedBefore, 2, "detector and landmarker released");
+  const late = bitmap();
+  await core.handle({ type: "detect", session: 1, frameId: 2, bitmap: late, timestamp: 2 });
+  assert.equal(late.closed, true, "a frame after dispose is still released");
+  assert.equal(mine.length, 2, "and gets no answer");
+  assert.equal(w.posted.length, before, "the worker's own core was not touched");
+});
+
+test("[fb] on the main thread MediaPipe is not asked to fetch the module loader as a classic script; in a worker it is untouched", async () => {
+  const page = loadWorker({ mainThread: true });
+  page.send({ type: "init" });
+  page.send({ type: "init-landmarker" });
+  page.send({ type: "init-segmenter" });
+  await settle();
+  assert.equal(page.fileArgs.length, 3);
+  for (const files of page.fileArgs) {
+    assert.equal(files.wasmLoaderPath, undefined, "no second load of the module file");
+    assert.equal(files.wasmBinaryPath, "module.wasm", "the binary is still located");
+  }
+  assert.deepEqual(page.posted.map((m) => m.type), ["ready", "landmarker-ready", "segmenter-ready"]);
+
+  const worker = loadWorker();
+  worker.send({ type: "init" });
+  await settle();
+  assert.equal(worker.fileArgs[0].wasmLoaderPath, "loader.js");
+});
+
+// ---------- Review round 1: dispose while loading; two cores on one thread ----------
+
+test("[r1] a task that finishes creating after dispose() is closed, and a disposed core stays silent", async () => {
+  const w = loadWorker();
+  const mine = [];
+  const core = w.context.createDetectorCore((message) => mine.push(message));
+  const loading = core.handle({ type: "init" });
+  const landmarking = core.handle({ type: "init-landmarker" });
+  core.dispose(); // while both are still being created
+  await loading;
+  await landmarking;
+  await settle();
+  assert.deepEqual(w.created.slice().sort(), ["detector", "landmarker"]);
+  assert.deepEqual(w.closed.slice().sort(), ["detector", "landmarker"], "nothing leaks");
+  assert.deepEqual(mine, [], "no ready / ready messages from a disposed core");
+});
+
+test("[r1] two cores created at the same time (a retry on the main thread) never share self.ModuleFactory", async () => {
+  const w = loadWorker({ mainThread: true });
+  const a = [];
+  const b = [];
+  const first = w.context.createDetectorCore((m) => a.push(m));
+  const second = w.context.createDetectorCore((m) => b.push(m));
+  await Promise.all([first.handle({ type: "init" }), second.handle({ type: "init" })]);
+  assert.deepEqual(a.map((m) => m.type), ["ready"]);
+  assert.deepEqual(b.map((m) => m.type), ["ready"], JSON.stringify(b));
 });

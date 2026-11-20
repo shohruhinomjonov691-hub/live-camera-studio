@@ -24,6 +24,8 @@
     tab: "monitor", camState: "idle", camInfo: null, stats: null, effect: "off", effectAlert: false, snapshots: [],
     segmenter: "off", bgImageInfo: null, bgImageError: null, mon: null, histSel: null, histKey: "", lastBeep: 0,
     overlay: true, // the user's landmark-overlay choice; drawn only in the Live Monitor view
+    engine: { mode: null, status: "off" }, // detector engine: worker | fallback, off | starting | active | error
+    dropSeen: 0, dropAt: 0, // late frames counted by the controller, and when the count last grew
   };
   const MAX_SNAPSHOTS = 6;
   const CAMERA_VIEWS = ["monitor", "effects"];
@@ -63,6 +65,38 @@
     },
   });
 
+  /**
+   * The detector core on the main thread, shaped like a Worker. Used only when the page cannot start a worker
+   * (the controller then reports the "Fallback" engine). The core module is loaded on demand. Messages are
+   * handled and answered in later tasks, so the controller never sees a reply from inside its own postMessage.
+   */
+  function createFallbackEngine() {
+    const engine = {
+      onmessage: null, onerror: null, terminated: false, core: null, queue: [],
+      postMessage(message) {
+        if (engine.terminated) return release(message);
+        if (engine.core) setTimeout(() => (engine.terminated ? release(message) : engine.core.handle(message)), 0);
+        else engine.queue.push(message);
+      },
+      terminate() {
+        engine.terminated = true;
+        engine.queue.splice(0).forEach(release);
+        if (engine.core) engine.core.dispose();
+      },
+    };
+    const release = (message) => message && message.bitmap && message.bitmap.close(); // a frame that will not be processed
+    import("/static/detector-core.mjs").then(
+      (module) => {
+        if (engine.terminated) return;
+        engine.core = module.createDetectorCore((message) =>
+          setTimeout(() => !engine.terminated && engine.onmessage && engine.onmessage({ data: message }), 0));
+        engine.queue.splice(0).forEach((message) => engine.postMessage(message));
+      },
+      (error) => !engine.terminated && engine.onerror && engine.onerror({ message: String((error && error.message) || error) }),
+    );
+    return engine;
+  }
+
   const video = $("#cam-video");
   const camera = window.createCameraController({
     video,
@@ -72,6 +106,7 @@
     mediaDevices: navigator.mediaDevices,
     isSecureContext: window.isSecureContext,
     createWorker: () => new Worker("/static/detector-worker.mjs", { type: "module" }),
+    createFallbackWorker: createFallbackEngine,
     createImageBitmap: (source) => window.createImageBitmap(source),
     // Only process new video frames when the browser can tell us about them.
     requestFrame: (fn) =>
@@ -83,6 +118,10 @@
     onState: (state, info) => {
       ui.camState = state;
       ui.camInfo = info;
+      if (state === "idle") {
+        ui.stats = null;
+        ui.dropSeen = ui.dropAt = 0;
+      }
       if (state === "live") updateDeviceButtons();
       monitorLifecycle(state, info);
       renderCamera();
@@ -92,7 +131,13 @@
     onAnalysis: (sample) => monitor.update(sample),
     drawLandmarks: (ctx, marks, width) => window.alertnessMonitorInternals.drawMonitorLandmarks(ctx, marks, width),
     onStats: (stats) => {
+      if (stats.dropped > ui.dropSeen) ui.dropAt = performance.now();
+      ui.dropSeen = stats.dropped;
       ui.stats = stats;
+      renderPerf();
+    },
+    onEngine: (engine) => {
+      ui.engine = engine;
       renderPerf();
     },
     onEffect: (status) => {
@@ -119,6 +164,8 @@
     loadBackgroundImage,
     snapshots: () => ui.snapshots.slice(),
     selectMode: (mode) => selectMode(mode),
+    performanceLevel: (stats, dropRecent) => performanceLevel(stats, dropRecent),
+    createFallbackEngine,
     setTab: (tab) => setTab(tab),
     monitor,
   };
@@ -213,6 +260,24 @@
     renderPerf();
   }
 
+  // Smoothness of the live pipeline: heuristic thresholds on the measured FPS and median processing delay (capture to
+  // drawn frame). A frame that missed its deadline in the last few seconds always counts as Lag.
+  function performanceLevel(stats, dropRecent) {
+    if (dropRecent) return "lag";
+    if (!stats || stats.fps === null || stats.fps === undefined) return null;
+    const delay = stats.latencyP50 ?? stats.latencyMs;
+    if (stats.fps < 8 || delay > 400) return "lag";
+    if (stats.fps < 15 || delay > 150) return "moderate";
+    return "smooth";
+  }
+
+  const ENGINE_TEXT = (engine) => {
+    if (engine.status === "error") return ["engine.error", "warn"];
+    if (engine.status === "off" || !engine.mode) return ["engine.off", ""];
+    if (engine.mode === "fallback") return ["engine.fallback", "warn"]; // works, but on the UI thread
+    return engine.status === "active" ? ["engine.worker", "ok"] : ["engine.starting", ""];
+  };
+
   function renderPerf() {
     const stats = ui.stats;
     const streaming = STREAMING.includes(ui.camState);
@@ -220,14 +285,38 @@
     $("#cam-meta").textContent = streaming && size ? t("ctrl.meta.on", size) : t("ctrl.meta.off");
     $("#chip-perf").textContent =
       stats && stats.fps !== null ? t("hud.perf", { fps: stats.fps.toFixed(0), ms: Math.round(stats.latencyMs) }) : t("hud.perf.none");
+
+    // Telemetry rows of the Live Monitor panel: measured values only.
+    const measured = streaming && stats && stats.fps !== null && stats.fps !== undefined;
+    const dropRecent = ui.dropAt > 0 && performance.now() - ui.dropAt < 5000;
+    const level = streaming ? performanceLevel(stats, dropRecent) : null;
+    $("#perf-fps").textContent = measured ? t("perf.fps.value", { fps: stats.fps.toFixed(0) }) : "—";
+    $("#perf-latency").textContent = measured ? t("perf.ms.value", { ms: Math.round(stats.latencyMs) }) : "—";
+    $("#perf-level").textContent = level ? t(`perf.${level}`) : streaming ? t("perf.measuring") : "—";
+    $("#perf-level").className = level === "smooth" ? "ok" : level === "lag" ? "warn" : "";
+    const [engineKey, engineTone] = ENGINE_TEXT(ui.engine);
+    $("#perf-engine").textContent = t(engineKey);
+    $("#perf-engine").className = engineTone;
+    const note = $("#perf-note");
+    note.hidden = !(streaming && stats && stats.dropped > 0);
+    if (!note.hidden) note.textContent = t("perf.dropped", { n: stats.dropped });
   }
 
+  // "Switch camera" is shown only when the device has more than one camera. Asked once per page; if the browser
+  // refuses (or the call fails) the buttons stay hidden and the next live start asks again.
+  let deviceCheck = "idle"; // idle | running | done
   async function updateDeviceButtons() {
-    if (updateDeviceButtons.done || !navigator.mediaDevices.enumerateDevices) return;
-    updateDeviceButtons.done = true;
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cameras = devices.filter((d) => d.kind === "videoinput").length;
-    $$("[data-act=flip]").forEach((b) => (b.hidden = cameras < 2));
+    const media = navigator.mediaDevices;
+    if (deviceCheck !== "idle" || !media || !media.enumerateDevices) return;
+    deviceCheck = "running";
+    try {
+      const devices = await media.enumerateDevices();
+      const cameras = devices.filter((d) => d.kind === "videoinput").length;
+      $$("[data-act=flip]").forEach((b) => (b.hidden = cameras < 2));
+      deviceCheck = "done";
+    } catch (_) {
+      deviceCheck = "idle";
+    }
   }
 
   const actions = {
@@ -590,6 +679,7 @@
     else if (e.type === "reopened") detail = t("ev.reopened.detail", { s: fmtSec(d.closedMs) });
     else if (e.type === "stopped" || e.type === "alertEnded") detail = t(`ev.reason.${d.reason}`);
     else if (e.type === "lost") detail = t("ev.lost.detail");
+    else if (e.type === "quality") detail = t(`quality.${d.level}`);
     return { label, detail };
   }
 
@@ -608,7 +698,8 @@
     const tracked = snap.status === "tracking" || snap.status === "turned";
     $("#sig-eyes").textContent = snap.eyes === "unknown" ? "—" : t(`signals.eyes.${snap.eyes}`);
     $("#sig-mouth").textContent = tracked && snap.mouth !== "unknown" ? t(`signals.mouth.${snap.mouth}`) : "—";
-    $("#sig-head").textContent = tracked && snap.head !== "unknown" ? t(`signals.head.${snap.head}`) : "—";
+    $("#sig-head").textContent = tracked && snap.head !== "unknown" ? headText(snap) : "—";
+    renderFrameSignals(snap, active);
     $("#sig-eyes").className = snap.eyes === "closed" ? "warn" : snap.eyes === "open" ? "ok" : "";
     const after = fmtSec(snap.settings.alertAfterMs);
     $("#mon-closure").textContent =
@@ -644,6 +735,27 @@
     }
     if (ui.tab === "history") renderHistory(false);
     if (ui.tab === "settings") renderCalibration(snap);
+  }
+
+  /** Head pose text: direction, plus the approximate angle for a left/right turn (the person's own left/right). */
+  function headText(snap) {
+    if (snap.head === "turned" && snap.yawDeg) {
+      return t(snap.yawDeg > 0 ? "signals.head.turnedLeft" : "signals.head.turnedRight", { deg: Math.abs(snap.yawDeg) });
+    }
+    return t(`signals.head.${snap.head}`);
+  }
+
+  /** Face count and frame-quality status of the last processed frame ("—" when there is none). */
+  function renderFrameSignals(snap, active) {
+    const n = active ? snap.faces : null;
+    $("#sig-faces").textContent = n === null || n === undefined ? "—" : t(n === 0 ? "faces.none" : n === 1 ? "faces.single" : "faces.multiple");
+    $("#sig-faces").className = n === 1 ? "ok" : n === null || n === undefined ? "" : "warn";
+    const quality = active ? snap.quality : "unknown";
+    $("#sig-quality").textContent = quality === "unknown" ? "—" : t(`quality.${quality}`);
+    $("#sig-quality").className = quality === "normal" ? "ok" : quality === "unknown" ? "" : "warn";
+    const hint = $("#quality-hint");
+    hint.hidden = !["lowLight", "outOfFrame", "recalibrate"].includes(quality);
+    if (!hint.hidden) hint.textContent = t(`quality.hint.${quality}`);
   }
 
   function drawChart(snap) {
@@ -683,7 +795,7 @@
   function renderEvents(snap) {
     const list = $("#mon-events");
     const events = snap.session ? snap.session.events : [];
-    const key = `${snap.session && snap.session.id}:${events.length}:${window.i18n.lang}`;
+    const key = `${snap.session && snap.session.id}:${events.length}:${events.length ? events[events.length - 1].wall : 0}:${window.i18n.lang}`;
     if (list.dataset.key === key) return;
     list.dataset.key = key;
     list.replaceChildren();
@@ -809,7 +921,7 @@
   function renderHistory(force) {
     const sessions = monitor.history();
     const current = sessions.find((x) => x.id === ui.histSel) || sessions[0] || null;
-    const key = `${sessions.length}:${sessions.map((x) => x.events.length).join(",")}:${current && current.id}:${window.i18n.lang}`;
+    const key = `${sessions.length}:${sessions.map((x) => `${x.events.length}.${(x.events.at(-1) || {}).wall}`).join(",")}:${current && current.id}:${window.i18n.lang}`;
     if (!force && key === ui.histKey) return;
     ui.histKey = key;
     const list = $("#hist-list");
@@ -850,7 +962,7 @@
     drawTimeline(current, end);
   }
 
-  const EVENT_COLORS = { alert: "#f5b84a", lost: "#ff7b7b", multiple: "#ff7b7b", invalid: "#ff7b7b", stopped: "#7f8ea3" };
+  const EVENT_COLORS = { alert: "#f5b84a", quality: "#f5b84a", lost: "#ff7b7b", multiple: "#ff7b7b", invalid: "#ff7b7b", stopped: "#7f8ea3" };
   function drawTimeline(session, end) {
     const canvas = $("#hist-timeline");
     const ctx = canvas.getContext("2d");

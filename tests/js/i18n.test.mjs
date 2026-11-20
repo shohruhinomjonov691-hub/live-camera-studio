@@ -49,6 +49,11 @@ test("every key used by the page and scripts exists", () => {
   }
   // Keys built at runtime
   used.push("privacy.strength.1", "privacy.strength.2", "privacy.strength.3");
+  used.push(...["normal", "lowLight", "outOfFrame", "recalibrate"].map((k) => `quality.${k}`));
+  used.push(...["lowLight", "outOfFrame", "recalibrate"].map((k) => `quality.hint.${k}`));
+  used.push(...["smooth", "moderate", "lag"].map((k) => `perf.${k}`));
+  used.push(...["worker", "fallback", "error", "starting", "off"].map((k) => `engine.${k}`));
+  used.push("signals.head.turnedLeft", "signals.head.turnedRight", "ev.quality");
   const missing = [...new Set(used)].filter((key) => !(key in en));
   assert.deepEqual(missing, []);
 });
