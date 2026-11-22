@@ -54,7 +54,7 @@ The production install at `camera.gotrips.cloud` uses `/etc/nginx/conf.d/`, with
 ## 4. Verify
 
 ```bash
-curl -sI https://camera.gotrips.cloud/ | grep -iE "^HTTP|content-security-policy|permissions-policy"
+curl -s -o /dev/null -w '%{http_code}' https://camera.gotrips.cloud/
 curl -s https://camera.gotrips.cloud/health
 sudo grep -c "buffered to a temporary file" /var/log/nginx/live-camera-studio.error.log   # expect 0 after uploads
 ```

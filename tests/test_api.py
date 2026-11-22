@@ -151,6 +151,19 @@ def test_blur_keeps_png_format(client):
     assert response.headers["content-type"] == "image/png"
 
 
+def test_blur_upload_flattens_png_transparent_color(client):
+    image = Image.new("RGB", (2, 1), (19, 47, 83))
+    image.putpixel((1, 0), (19, 47, 84))
+    source = io.BytesIO()
+    image.save(source, format="PNG", transparency=(19, 47, 83))
+
+    response = client.post("/api/blur", content=source.getvalue(), headers={"X-Regions": "[]"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    np.testing.assert_array_equal(decode(response.content), [[(255, 255, 255), (19, 47, 84)]])
+
+
 def test_blur_maps_manual_region_in_oriented_coordinates(client):
     # Stored 40x20 with orientation 6 -> displayed/processed as 20x40.
     response = client.post(

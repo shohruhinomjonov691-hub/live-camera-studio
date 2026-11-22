@@ -1,11 +1,13 @@
 import io
+import struct
+import zlib
 
 import numpy as np
 import pytest
 from PIL import Image
 
 from app import config
-from app.image_io import ImageError, decode_image, encode_image, sniff_format
+from app.image_io import PNG_MAGIC, ImageError, decode_image, encode_image, sniff_format
 from tests.conftest import GPS_IFD, make_jpeg, make_png
 
 
@@ -61,6 +63,57 @@ def test_flattens_png_alpha_onto_white():
     assert decoded.format == "PNG"
     assert decoded.pixels.shape == (10, 10, 3)
     assert np.all(decoded.pixels == 255)
+
+
+@pytest.mark.parametrize(
+    ("mode", "transparent", "opaque", "expected"),
+    [
+        ("RGB", (19, 47, 83), (19, 47, 84), (19, 47, 84)),
+        ("L", 19, 20, (20, 20, 20)),
+        ("I;16", 19, 20, (20, 20, 20)),
+    ],
+)
+def test_flattens_png_transparent_color_onto_white(mode, transparent, opaque, expected):
+    image = Image.new(mode, (2, 1), transparent)
+    image.putpixel((1, 0), opaque)
+    source = io.BytesIO()
+    image.save(source, format="PNG", transparency=transparent)
+
+    decoded = decode_image(source.getvalue())
+
+    assert decoded.format == "PNG"
+    np.testing.assert_array_equal(decoded.pixels, [[(255, 255, 255), expected]])
+
+
+def png_with_transparent_sample(bit_depth, color_type, samples, transparency):
+    def chunk(kind, payload):
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload))
+
+    return PNG_MAGIC + b"".join([
+        chunk(b"IHDR", struct.pack(">2I5B", 2, 1, bit_depth, color_type, 0, 0, 0)),
+        chunk(b"tRNS", transparency),
+        chunk(b"IDAT", zlib.compress(b"\x00" + samples)),
+        chunk(b"IEND", b""),
+    ])
+
+
+@pytest.mark.parametrize(("bit_depth", "samples", "opaque"), [(2, b"\x60", 170), (4, b"\x12", 34)])
+def test_flattens_low_bit_depth_grayscale_png_transparent_color(bit_depth, samples, opaque):
+    source = png_with_transparent_sample(bit_depth, 0, samples, struct.pack(">H", 1))
+
+    decoded = decode_image(source)
+
+    np.testing.assert_array_equal(decoded.pixels, [[(255, 255, 255), (opaque, opaque, opaque)]])
+
+
+def test_flattens_16_bit_rgb_png_transparent_color_without_hiding_nearby_color():
+    transparent = (0x77AB, 0x56AB, 0x35AB)
+    opaque = (0x77AC, 0x56AB, 0x35AB)  # same upper bytes, so 8-bit comparison cannot distinguish them
+    source = png_with_transparent_sample(16, 2, struct.pack(">6H", *transparent, *opaque), struct.pack(">3H", *transparent))
+
+    decoded = decode_image(source)
+
+    np.testing.assert_array_equal(decoded.pixels, [[(255, 255, 255), (0x77, 0x56, 0x35)]])
 
 
 def test_encoded_jpeg_has_no_exif_or_gps():

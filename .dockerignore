@@ -14,3 +14,7 @@ compose.yaml
 .dockerignore
 .DS_Store
 .env
+**/.env.*
+!**/.env.example
+**/*.key
+**/*.pem

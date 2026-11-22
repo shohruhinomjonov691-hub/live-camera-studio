@@ -661,12 +661,23 @@ test("[mon] settings: duration is clamped, sound is shared, history is cleared o
   assert.equal(h.el("#s-clear-done").hidden, false);
 });
 
-test("[mon] the calibration button is enabled only while one face is tracked", async () => {
+test("[mon] losing the face cancels calibration and tracking a face again re-enables the button", async () => {
   const h = loadShell({ realCamera: true });
   h.context.liveCameraShell.setTab("settings");
   assert.equal(h.el("#s-calibrate").disabled, true);
   assert.equal(h.el("#s-cal-status").textContent, EN("set.cal.needCamera"));
   const worker = await monitoring(h);
+  await monitorFrame(h, worker, 0.3);
+  assert.equal(h.el("#s-calibrate").disabled, false);
+  h.el("#s-calibrate").listeners.click.forEach((fn) => fn());
+  assert.equal(h.el("#s-cal-status").textContent, EN("set.cal.running"));
+  assert.equal(h.el("#s-calibrate").disabled, true);
+
+  const msg = await nextFrame(h, worker);
+  worker.onmessage({ data: { type: "result", session: msg.session, frameId: msg.frameId, faces: [], marks: [] } });
+  assert.equal(h.el("#s-cal-status").textContent, EN("set.cal.needCamera"));
+  assert.equal(h.el("#s-calibrate").disabled, true);
+
   await monitorFrame(h, worker, 0.3);
   assert.equal(h.el("#s-calibrate").disabled, false);
   h.el("#s-calibrate").listeners.click.forEach((fn) => fn());

@@ -274,6 +274,7 @@
     }
 
     function setStatus(next, at) {
+      if (next === "noface") cancelCalibration();
       if (next === status) return;
       const wasTracking = status === "tracking" || status === "turned";
       // Logged only after a face was really tracked (or when one lost state turns into another), so a session

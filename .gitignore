@@ -4,6 +4,10 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 .env
+.env.*
+!.env.example
+*.key
+*.pem
 # Evaluation images are never committed
 eval/images/
 

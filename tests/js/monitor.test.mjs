@@ -239,6 +239,25 @@ test("calibration sets the open-eye baseline from tracked frames; a bad calibrat
   assert.equal(few.snapshot().calibration, "failed");
 });
 
+test("losing the face during recalibration cancels the attempt and preserves the last baseline", () => {
+  const { m } = monitor();
+  m.update({ at: 0, ...one()() });
+  m.calibrate(0);
+  feed(m, 50, 3000, one({ ear: 0.2 }));
+  assert.equal(m.snapshot().calibration, "done");
+
+  m.calibrate(3050);
+  feed(m, 3050, 4000, one({ ear: 0.35 }));
+  const lost = m.update({ at: 4050, faces: 1, marks: [] });
+  assert.equal(lost.status, "noface");
+  assert.equal(lost.calibration, "none");
+  assert.equal(lost.calibrated, true);
+
+  const back = m.update({ at: 6500, ...one({ ear: 0.2 })() });
+  assert.equal(back.calibration, "none");
+  assert.ok(Math.abs(back.openness - 1) < 1e-9);
+});
+
 test("history keeps finished sessions newest first; clearing keeps the running session", () => {
   const { m } = monitor({ alertAfterMs: 1000 });
   feed(m, 0, 1100, one({ ear: 0.1 }));
